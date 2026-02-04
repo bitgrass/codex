@@ -1,0 +1,2026 @@
+"use client";
+
+import React, { Fragment, useState, useEffect, useRef } from "react";
+import Link from "next/link";
+import { Seaport } from "@opensea/seaport-js";
+import { useAccount, useSwitchChain, useSendTransaction, useConnect, useConnectors } from 'wagmi';
+import { base } from 'wagmi/chains';
+import { id } from 'ethers';
+import axios from "axios";
+import { EthInfo } from "@/shared/data/tokens/data";
+import PurchaseCelebrationModal from "@/shared/layout-components/modal/PurchaseCelebrationModal";
+import PurchaseFailedModal from "@/shared/layout-components/modal/PurchaseFailedModal";
+import MintCelebrationModal from "@/shared/layout-components/modal/MintCelebrationModal";
+
+import { ethers } from "ethers";
+import { nftInfo, SeaDropABIData, CONTRACT_ADDRESS_INFO, SEADROP_ADDRESS_INFO, SEADROP_CONDUIT_INFO } from "@/shared/data/tokens/data";
+import { usePrivy, useLogin } from '@privy-io/react-auth';
+import { useConnectedAddress } from "../../useConnectedAddress"; // Update this import path
+import { sdk } from "@farcaster/miniapp-sdk";
+
+type OrderData = {
+    parameters: any;
+    signature: string;
+};
+
+interface NftdetailsProps {
+    initialTabId: string;
+}
+// Get the Farcaster Ethereum provider
+async function getFarcasterProvider() {
+    try {
+        const provider = await sdk.wallet.getEthereumProvider();
+        console.log("Farcaster Ethereum provider obtained:", provider);
+        return provider;
+    } catch (error) {
+        console.error("Failed to get Farcaster provider:", error);
+        return null;
+    }
+}
+async function pollForTransfer(
+    contractAddress: string,
+    toAddress: string,
+    provider: ethers.JsonRpcProvider,
+    timeoutMs = 120000
+): Promise<string[]> {
+    const startBlock = await provider.getBlockNumber();
+    const transferTopic = ethers.id("Transfer(address,address,uint256)");
+    const tokenIds: string[] = [];
+    const endTime = Date.now() + timeoutMs;
+
+    while (Date.now() < endTime) {
+        const currentBlock = await provider.getBlockNumber();
+
+        const logs = await provider.getLogs({
+            address: contractAddress,
+            fromBlock: startBlock,
+            toBlock: currentBlock,
+            topics: [
+                transferTopic,
+                null, // from (wildcard)
+                "0x" + toAddress.toLowerCase().replace("0x", "").padStart(64, "0"), // to = recipient
+            ],
+        });
+
+        if (logs.length > 0) {
+            for (const log of logs) {
+                const tokenId = BigInt(log.topics[3]).toString();
+                tokenIds.push(tokenId);
+            }
+            break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+
+    return tokenIds;
+}
+
+
+const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
+
+    const CONTRACT_ADDRESS = CONTRACT_ADDRESS_INFO;
+    const SEADROP_ADDRESS = SEADROP_ADDRESS_INFO;
+    const SEADROP_CONDUIT = SEADROP_CONDUIT_INFO;
+    const SeaDropABI = SeaDropABIData
+    const [baseMintPriceEth, setBaseMintPriceEth] = useState<number>(0);
+    const [ethToUsd, setEthToUsd] = useState<number>(0);
+    const { ready, authenticated } = usePrivy();
+    const { login } = useLogin();
+    const BASE_CHAIN_ID = 8453;
+    const [loading, setLoading] = useState(false);
+    const [quantity, setQuantity] = useState(1);
+    const [txHash, setTxHash] = useState("");
+    const [toastMessage, setToastMessage] = useState<string | null>(null);
+    const [showToast, setShowToast] = useState(false);
+    const [mintPriceEth, setMintPriceEth] = useState<string>("0");
+    const [mintPriceUsd, setMintPriceUsd] = useState<string>("0.00");
+
+    // Use the hook to get the appropriate address and client
+    const {
+        address: userAddress,
+        client,
+        farcasterWallet,
+        hasExternalWallet,
+        hasEmbeddedWallet,
+        isMinitapp,
+        _debug
+    } = useConnectedAddress();
+
+
+    const { switchChainAsync } = useSwitchChain();
+    const { sendTransactionAsync } = useSendTransaction();
+    const { connectAsync } = useConnect();
+    const connectors = useConnectors();
+    const [isMinting, setIsMinting] = useState(false);
+    const [success, setSuccess] = useState(false);
+    const [error, setError] = useState(false);
+    const [toastTitle, setToastTitle] = useState<string | null>(null);
+    const STATIC_MINT_PRICE_ETH = 0.00001; // adjust as needed
+    const [isBuying, setIsBuying] = useState(false);
+
+    // Use isConnected from wagmi, but also check if we have an address from our hook
+    const { isConnected: wagmiConnected, address: wagmiAddress, connector: activeConnector } = useAccount();
+    const isConnected = wagmiConnected || !!userAddress;
+
+    const [activeTab, setActiveTab] = useState("");
+    const tabList = ["Standard 100m² Plot", "Premium 500m² Plot", "Legendary 1000m² Plot"];
+
+    const [isModalOpen, setModalOpen] = useState(false);
+    const [isStandardMintModalOpen, setIsStandardMintModalOpen] = useState(false);
+    const imagesLoadedRef = useRef({
+        standard: false,
+        premium: false,
+        legendary: false
+    });
+    const [imageOpacity, setImageOpacity] = useState({
+        standard: 0,
+        premium: 0,
+        legendary: 0
+    });
+    const [failureTxHash, setFailureTxHash] = useState("");
+    const [failureImage, setFailureImage] = useState("");
+    const OPENSEA_CONTRACT_ADDRESS = nftInfo.address;
+    const [listedLegendaryItems, setListedLegendaryItems] = useState<any[]>([]);
+    const [listedPremiumItems, setListedPremiumItems] = useState<any[]>([]);
+    const [isLoadingFetchAvailable, setIsLoadingFetchAvailable] = useState<boolean>(false)
+    const [modalData, setModalData] = useState({
+        id: "",
+        image: "",
+        name: "",
+        tier: "Standard" as "Standard" | "Premium" | "Legendary"
+    });
+    const sortedPremiumItems = [...listedPremiumItems].sort((a: any, b: any) =>
+        parseInt(a.protocol_data.parameters.offer[0].identifierOrCriteria) -
+        parseInt(b.protocol_data.parameters.offer[0].identifierOrCriteria)
+    );
+    const sortedLegendaryItems = [...listedLegendaryItems].sort((a: any, b: any) =>
+        parseInt(a.protocol_data.parameters.offer[0].identifierOrCriteria) -
+        parseInt(b.protocol_data.parameters.offer[0].identifierOrCriteria)
+    );
+    const openseaAddress = process.env.NEXT_PUBLIC_OPENSEA_ADDRESS as string;
+    const collection = process.env.NEXT_PUBLIC_OPENSEA_COLLECTION as string
+    const apiKey = process.env.NEXT_PUBLIC_OPENSEA_API_KEY;
+    const [isFailureModalOpen, setFailureModalOpen] = useState(false);
+    const [activeOrder, setActiveOrder] = useState(false);
+    const [pendingPurchase, setPendingPurchase] = useState(false);
+    const [pendingNftImage, setPendingNftImage] = useState("");
+
+    // Map tab IDs to tab names
+    const tabIdToName: Record<string, string> = {
+        standard: "Standard 100m² Plot",
+        premium: "Premium 500m² Plot",
+        legendary: "Legendary 1000m² Plot",
+    };
+
+
+    useEffect(() => {
+        const initSDK = async () => {
+            if (isMinitapp) {
+                try {
+                    await sdk.actions.ready();
+                    console.log("Farcaster SDK initialized");
+                } catch (error) {
+                    console.error("Failed to initialize Farcaster SDK:", error);
+                }
+            }
+        };
+
+        initSDK();
+    }, [isMinitapp]);
+
+
+
+    const ensureBaseChain = async () => {
+        if (!client) throw new Error("No wallet client");
+
+        // In Farcaster miniapp, be more lenient with chain switching
+        if (isMinitapp && farcasterWallet) {
+            // For Farcaster wallets in miniapp, we might not be able to switch chains
+            // but we should check the current chain if possible
+            try {
+                const chainId = await client.getChainId?.();
+                if (chainId && chainId !== BASE_CHAIN_ID) {
+                    // In miniapp, show a less aggressive warning
+                    console.warn(`Current chain: ${chainId}, expected: ${BASE_CHAIN_ID}`);
+                    // Still allow the transaction to proceed - let the wallet handle it
+                }
+            } catch (err) {
+                console.warn("Could not check chain for Farcaster wallet:", err);
+            }
+            return true;
+        }
+
+        // For other wallet types, try to switch chain
+        const chainId = await client.getChainId?.();
+        if (chainId !== BASE_CHAIN_ID) {
+            try {
+                await switchChainAsync({ chainId: BASE_CHAIN_ID });
+                return true;
+            } catch (err) {
+                setToastTitle("Wrong Network");
+                setToastMessage("Please switch your wallet to Base before minting.");
+                setShowToast(true);
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Set initial tab based on initialTabId
+    useEffect(() => {
+        const tabName = tabIdToName[initialTabId] || "Standard 100m² Plot";
+        setActiveTab(tabName);
+    }, [initialTabId]);
+
+    // Disabled - Coming Soon
+    const handleMintAbi = async (quantity: number) => {
+        try {
+            setLoading(true);
+            setIsMinting(true);
+            
+            // Set pending purchase toast with Standard icon
+            setPendingNftImage("/assets/images/brand-logos/Standard.svg");
+            setPendingPurchase(true);
+            
+            console.log("Address for minting:", userAddress);
+            console.log("Is miniapp:", isMinitapp);
+
+            if (!userAddress || !ready || !authenticated) {
+                login();
+                return;
+            }
+
+            // For non-Farcaster environments, we still need a client
+            if (!isMinitapp && !client) {
+                login();
+                return;
+            }
+
+            const onBase = await ensureBaseChain();
+            if (!onBase) {
+                setLoading(false);
+                return;
+            }
+
+            // Read mint price from SeaDrop
+            const publicProvider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+            const readSeaDrop = new ethers.Contract(SEADROP_ADDRESS, SeaDropABI, publicProvider);
+            const publicDrop = await readSeaDrop.getPublicDrop(CONTRACT_ADDRESS);
+            const mintPrice = publicDrop.mintPrice;
+            const totalPrice = mintPrice * BigInt(quantity);
+
+            // Check user balance
+            const balance = await publicProvider.getBalance(userAddress);
+            console.log("💳 User balance:", ethers.formatEther(balance), "ETH");
+            console.log("💰 Total price needed:", ethers.formatEther(totalPrice), "ETH");
+
+            if (balance < totalPrice) {
+                throw new Error("INSUFFICIENT_BALANCE");
+            }
+
+            // Prepare calldata
+            const iface = new ethers.Interface(SeaDropABI);
+            const calldata = iface.encodeFunctionData("mintPublic", [
+                CONTRACT_ADDRESS,
+                SEADROP_CONDUIT,
+                userAddress,
+                quantity,
+            ]) as `0x${string}`;
+
+            let txHash: string;
+
+            // Use Farcaster SDK provider directly for miniapp (Wagmi has issues with connector priority)
+            if (isMinitapp && farcasterWallet && userAddress === farcasterWallet) {
+                console.log("Using Farcaster SDK Ethereum provider for mint");
+                console.log("🔍 Wagmi state:", {
+                    wagmiAddress,
+                    activeConnector: activeConnector?.id,
+                    userAddress,
+                    farcasterWallet
+                });
+
+                const farcasterProvider = await getFarcasterProvider();
+                if (!farcasterProvider) {
+                    throw new Error("Failed to get Farcaster Ethereum provider");
+                }
+
+                const txParams = {
+                    from: userAddress as `0x${string}`,
+                    to: SEADROP_ADDRESS as `0x${string}`,
+                    value: "0x" + totalPrice.toString(16) as `0x${string}`,
+                    data: calldata as `0x${string}`,
+                    chainId: "0x" + base.id.toString(16), // Add chainId for better display
+                };
+                
+                console.log("📤 Mint transaction params:", {
+                    from: txParams.from,
+                    to: txParams.to,
+                    value: ethers.formatEther(totalPrice) + " ETH",
+                    valueHex: txParams.value,
+                    quantity: quantity,
+                    contract: CONTRACT_ADDRESS,
+                    chainId: txParams.chainId,
+                    dataLength: calldata.length
+                });
+
+                txHash = await farcasterProvider.request({
+                    method: "eth_sendTransaction",
+                    params: [txParams],
+                }).catch((txError: any) => {
+                    console.error("❌ Transaction error:", txError);
+                    if (
+                        txError?.message?.toLowerCase().includes("insufficient funds") ||
+                        txError?.message?.toLowerCase().includes("exceeds the balance") ||
+                        txError?.details?.toLowerCase().includes("insufficient funds") ||
+                        txError?.name?.includes("EstimateGasExecutionError") ||
+                        txError?.shortMessage?.toLowerCase().includes("insufficient funds")
+                    ) {
+                        throw new Error("INSUFFICIENT_BALANCE");
+                    }
+                    throw txError;
+                });
+                console.log("✅ Farcaster provider mint submitted:", txHash);
+            } else {
+                // Standard EIP-1193 for other environments
+                console.log("Using standard EIP-1193 provider for mint");
+                txHash = await client.request({
+                    method: "eth_sendTransaction",
+                    params: [
+                        {
+                            from: userAddress,
+                            to: SEADROP_ADDRESS,
+                            value: "0x" + totalPrice.toString(16),
+                            data: calldata,
+                        },
+                    ],
+                }).catch((txError: any) => {
+                    console.error("❌ Transaction error:", txError);
+                    if (
+                        txError?.message?.toLowerCase().includes("insufficient funds") ||
+                        txError?.message?.toLowerCase().includes("exceeds the balance") ||
+                        txError?.details?.toLowerCase().includes("insufficient funds") ||
+                        txError?.name?.includes("EstimateGasExecutionError") ||
+                        txError?.shortMessage?.toLowerCase().includes("insufficient funds")
+                    ) {
+                        throw new Error("INSUFFICIENT_BALANCE");
+                    }
+                    throw txError;
+                });
+                console.log("✅ Standard mint transaction submitted:", txHash);
+            }
+
+            // Wait for confirmation and parse events
+            const receipt = await publicProvider.waitForTransaction(txHash);
+            const transferTopic = ethers.id("Transfer(address,address,uint256)");
+            const mintedTokenIds: string[] = [];
+
+            if (receipt) {
+                for (const log of receipt.logs) {
+                    if (
+                        log.address.toLowerCase() === CONTRACT_ADDRESS.toLowerCase() &&
+                        log.topics[0] === transferTopic &&
+                        log.topics.length === 4
+                    ) {
+                        mintedTokenIds.push(BigInt(log.topics[3]).toString());
+                    }
+                }
+            }
+
+            if (mintedTokenIds.length > 0) {
+                setPendingPurchase(false); // Hide pending toast
+                setModalData({
+                    id: mintedTokenIds.join(", "),
+                    image: "/assets/images/apps/100m2.webp",
+                    name: `Bitgrass - Standard Collection`,
+                    tier: "Standard"
+                });
+                setIsStandardMintModalOpen(true);
+            }
+        } catch (error: any) {
+            console.error("❌ Mint failed:", error);
+            setPendingPurchase(false); // Hide pending toast
+
+            if (error?.code === 4001 || error?.message?.toLowerCase().includes("user rejected")) {
+                setToastTitle("Transaction Rejected");
+                setToastMessage("You missed your plot.");
+            } else if (
+                error?.message === "INSUFFICIENT_BALANCE" ||
+                error?.code === "INSUFFICIENT_FUNDS" ||
+                error?.message?.toLowerCase().includes("insufficient funds") ||
+                error?.message?.toLowerCase().includes("insufficient balance") ||
+                error?.message?.toLowerCase().includes("exceeds the balance") ||
+                error?.details?.toLowerCase().includes("insufficient funds") ||
+                error?.name?.includes("EstimateGasExecutionError") ||
+                error?.shortMessage?.toLowerCase().includes("insufficient funds")
+            ) {
+                setToastTitle("Insufficient Balance");
+                setToastMessage("You need more ETH to complete this purchase.");
+            } else {
+                setToastTitle("Transaction Failed");
+                setToastMessage("⚠️ Something went wrong. Please try again.");
+            }
+            setShowToast(true);
+        } finally {
+            setLoading(false);
+            setIsMinting(false);
+        }
+    };
+
+    const initPrices = async () => {
+        try {
+            const mintPriceEth = STATIC_MINT_PRICE_ETH;
+            setBaseMintPriceEth(mintPriceEth);
+            const usdRes = await axios.get(
+                `https://deep-index.moralis.io/api/v2.2/erc20/${EthInfo.address}/price?chain=eth&include=percent_change`,
+                {
+                    headers: {
+                        accept: "application/json",
+                        "X-API-Key": process.env.NEXT_PUBLIC_MORALIS_APY_KEY!,
+                    },
+                }
+            );
+            setEthToUsd(usdRes.data.usdPrice);
+        } catch (err) {
+            console.error("initPrices failed:", err);
+        }
+    };
+
+    useEffect(() => {
+        if (userAddress) {
+            initPrices();
+        }
+    }, [userAddress]);
+
+    useEffect(() => {
+        if (baseMintPriceEth > 0 && ethToUsd > 0) {
+            const totalEth = baseMintPriceEth * quantity;
+            setMintPriceEth(totalEth.toFixed(5));
+            setMintPriceUsd((totalEth * ethToUsd).toFixed(2));
+        }
+    }, [quantity, baseMintPriceEth, ethToUsd]);
+
+    async function fetchAvailableNfts() {
+        setIsLoadingFetchAvailable(true);
+
+        if (!userAddress || !isConnected) {
+            setIsLoadingFetchAvailable(false);
+            console.log("Missing wallet connection, skipping fetch...");
+            return;
+        }
+
+        let legendaryNftDispo: number[] = [];
+        let primaryNftDispo: number[] = [];
+        let nextCursor: string | null = null;
+        let pagesChecked = 0;
+        const MAX_PAGES = 5; // Increased to 5 pages to ensure we find available NFTs
+
+        const getListings = async (cursor: string | null = null) => {
+            const params = new URLSearchParams({ collection });
+            if (cursor) params.set("next", cursor);
+            const res = await fetch(`https://muddy-forest-4e3a.bitgrass-crypto.workers.dev/api/opensea-listings?${params}`, {
+                headers: {
+                    'api-key': `${apiKey}`
+                }
+            });
+            const text = await res.text();
+
+            if (!res.ok) {
+                console.error('OpenSea proxy failed', {
+                    status: res.status,
+                    url: res.url,
+                    body: text.slice(0, 2000)
+                });
+                throw new Error(`API error ${res.status}`);
+            }
+
+            return JSON.parse(text);
+        };
+
+        do {
+            try {
+                const data = await getListings(nextCursor);
+                const nfts = data.listings || [];
+                nextCursor = data.next || null;
+                pagesChecked++;
+
+                const newLegendary: number[] = nfts.flatMap((nft: any) => {
+                    if (
+                        nft.protocol_data.parameters.offerer.toLowerCase() === openseaAddress.toLowerCase() &&
+                        parseInt(nft.protocol_data.parameters.offer[0].identifierOrCriteria) >= 1 &&
+                        parseInt(nft.protocol_data.parameters.offer[0].identifierOrCriteria) <= 400
+                    ) {
+                        return [parseInt(nft.protocol_data.parameters.offer[0].identifierOrCriteria)];
+                    }
+                    return [];
+                });
+
+                const newPremium: number[] = nfts.flatMap((nft: any) => {
+                    if (
+                        nft.protocol_data.parameters.offerer.toLowerCase() === openseaAddress.toLowerCase() &&
+                        parseInt(nft.protocol_data.parameters.offer[0].identifierOrCriteria) >= 401 &&
+                        parseInt(nft.protocol_data.parameters.offer[0].identifierOrCriteria) <= 1200
+                    ) {
+                        return [parseInt(nft.protocol_data.parameters.offer[0].identifierOrCriteria)];
+                    }
+                    return [];
+                });
+
+                legendaryNftDispo = [...legendaryNftDispo, ...newLegendary];
+                primaryNftDispo = [...primaryNftDispo, ...newPremium];
+
+                // Stop early if we have at least one of each OR reached max pages
+                if ((legendaryNftDispo.length > 0 && primaryNftDispo.length > 0) || pagesChecked >= MAX_PAGES) {
+                    break;
+                }
+            } catch (err) {
+                console.error("Failed to fetch NFTs:", err);
+                break;
+            }
+        } while (nextCursor);
+
+        // Fetch both in parallel instead of sequentially
+        const fetchPromises = [];
+        
+        if (legendaryNftDispo.length > 0) {
+            fetchPromises.push(
+                fetchListedLegendaryItems(legendaryNftDispo.sort((a, b) => a - b))
+            );
+        } else {
+            setListedLegendaryItems([]);
+        }
+
+        if (primaryNftDispo.length > 0) {
+            fetchPromises.push(
+                fetchListedPremiumItems(primaryNftDispo.sort((a, b) => a - b))
+            );
+        } else {
+            setListedPremiumItems([]);
+        }
+
+        // Wait for both fetches to complete in parallel
+        await Promise.all(fetchPromises);
+
+        setIsLoadingFetchAvailable(false);
+    }
+    async function fetchListedLegendaryItems(tokenIds: any) {
+        if (!userAddress || !isConnected || !apiKey) {
+            console.log("Missing wallet connection or API key, skipping fetch...");
+            return;
+        }
+
+        if (tokenIds.length === 0) {
+            console.log("No legendary NFTs available to fetch listings");
+            setListedLegendaryItems([]);
+            return;
+        }
+
+        // Fetch listings for first 3 token IDs to have backup options
+        const tokenIdsToFetch = tokenIds.slice(0, 3);
+
+        try {
+            const url = new URL("https://api.opensea.io/api/v2/orders/base/seaport/listings");
+            url.searchParams.set("asset_contract_address", OPENSEA_CONTRACT_ADDRESS);
+            url.searchParams.set("limit", "50");
+            url.searchParams.set("order_by", "created_date");
+            url.searchParams.set("order_direction", "desc");
+            url.searchParams.set("maker", openseaAddress.toLowerCase());
+            
+            // Add multiple token IDs
+            tokenIdsToFetch.forEach((tokenId: number) => {
+                url.searchParams.append("token_ids", tokenId.toString());
+            });
+
+            const res = await fetch(url.toString(), {
+                headers: {
+                    accept: "application/json",
+                    "x-api-key": apiKey,
+                },
+            });
+
+            if (!res.ok) {
+                console.error(`OpenSea fetch failed for legendary listing (token ID ${firstTokenId}): ${res.status}`);
+                setListedLegendaryItems([]);
+                return;
+            }
+
+            const data = await res.json();
+            const now = Math.floor(Date.now() / 1000);
+            const orders = (data.orders || []).filter((order: any) => {
+                const isActive = !order.cancelled && !order.fulfilled && order.expiration_time > now;
+                return isActive;
+            });
+
+            if (orders.length > 0) {
+                const sorted = [...orders]
+                    .filter(item => item?.protocol_data?.parameters?.offer?.[0]?.identifierOrCriteria)
+                    .sort(
+                        (a, b) =>
+                            parseInt(a.protocol_data.parameters.offer[0].identifierOrCriteria) -
+                            parseInt(b.protocol_data.parameters.offer[0].identifierOrCriteria)
+                    );
+
+                setListedLegendaryItems(sorted);
+                console.log(`Found ${sorted.length} active legendary listings`);
+            } else {
+                console.log(`No active legendary NFT listings found`);
+                setListedLegendaryItems([]);
+            }
+        } catch (err) {
+            console.error(`Failed to fetch legendary listings:`, err);
+            setListedLegendaryItems([]);
+        }
+    }
+
+    async function fetchListedPremiumItems(tokenIds: any) {
+        if (!userAddress || !isConnected || !apiKey) {
+            console.log("Missing wallet connection or API key, skipping fetch...");
+            return;
+        }
+
+        if (tokenIds.length === 0) {
+            console.log("No premium NFTs available to fetch listings");
+            setListedPremiumItems([]);
+            return;
+        }
+
+        // Fetch listings for first 3 token IDs to have backup options
+        const tokenIdsToFetch = tokenIds.slice(0, 3);
+
+        try {
+            const url = new URL("https://api.opensea.io/api/v2/orders/base/seaport/listings");
+            url.searchParams.set("asset_contract_address", OPENSEA_CONTRACT_ADDRESS);
+            url.searchParams.set("limit", "50");
+            url.searchParams.set("order_by", "created_date");
+            url.searchParams.set("order_direction", "desc");
+            url.searchParams.set("maker", openseaAddress.toLowerCase());
+            
+            // Add multiple token IDs
+            tokenIdsToFetch.forEach((tokenId: number) => {
+                url.searchParams.append("token_ids", tokenId.toString());
+            });
+
+            const res = await fetch(url.toString(), {
+                headers: {
+                    accept: "application/json",
+                    "x-api-key": apiKey,
+                },
+            });
+
+            if (!res.ok) {
+                console.error(`OpenSea fetch failed for premium listing (token ID ${firstTokenId}): ${res.status}`);
+                setListedPremiumItems([]);
+                return;
+            }
+            const data = await res.json();
+            console.log("dataaa", data)
+            const now = Math.floor(Date.now() / 1000);
+            const orders = (data.orders || []).filter((order: any) => {
+                const isActive = !order.cancelled && !order.fulfilled && order.expiration_time > now;
+                return isActive;
+            });
+            console.log("orders", orders)
+
+            if (orders.length > 0) {
+                const sorted = [...orders]
+                    .filter(item => item?.protocol_data?.parameters?.offer?.[0]?.identifierOrCriteria)
+                    .sort(
+                        (a, b) =>
+                            parseInt(a.protocol_data.parameters.offer[0].identifierOrCriteria) -
+                            parseInt(b.protocol_data.parameters.offer[0].identifierOrCriteria)
+                    );
+
+                setListedPremiumItems(sorted);
+                console.log(`Found ${sorted.length} active premium listings`);
+            } else {
+                console.log(`No active premium NFT listings found`);
+                setListedPremiumItems([]);
+            }
+        } catch (err) {
+            console.error(`Failed to fetch premium listings:`, err);
+            setListedPremiumItems([]);
+        }
+    }
+
+    useEffect(() => {
+        fetchAvailableNfts();
+    }, [userAddress, isConnected]);
+
+    useEffect(() => {
+        fetchAvailableNfts();
+    }, [isModalOpen, isFailureModalOpen]);
+    async function handleBuy(order: any, tier: "Legendary" | "Premium") {
+        if (!userAddress || !ready || !authenticated) {
+            login();
+            return;
+        }
+
+        console.log("=== WALLET DEBUG INFO ===");
+        console.log("userAddress:", userAddress);
+        console.log("farcasterWallet:", farcasterWallet);
+        console.log("isMinitapp:", isMinitapp);
+        console.log("hasEmbeddedWallet:", hasEmbeddedWallet);
+        console.log("hasExternalWallet:", hasExternalWallet);
+        console.log("client:", client);
+
+        if (!order) {
+            const modalDataFailed: any = await getModalData();
+            setFailureImage(modalDataFailed.image);
+            setActiveOrder(false);
+            setFailureModalOpen(true);
+            return;
+        }
+
+
+
+
+
+        try {
+            setIsBuying(true);
+            
+            // Set pending purchase toast with category icon
+            const iconMap: any = {
+                "Legendary": "/assets/images/brand-logos/Legendary.svg",
+                "Premium": "/assets/images/brand-logos/Premium.svg",
+                "Standard": "/assets/images/brand-logos/Standard.svg"
+            };
+            setPendingNftImage(iconMap[tier] || "/assets/images/brand-logos/Standard.svg");
+            setPendingPurchase(true);
+
+            // Check and switch to Base network if needed
+            // For embedded Privy wallets, use switchChainAsync from wagmi
+            // For external wallets, use window.ethereum
+            if (hasEmbeddedWallet && !hasExternalWallet) {
+                console.log('🔄 Using embedded wallet, ensuring Base chain via wagmi');
+                try {
+                    // Always switch to Base to ensure we're on the correct chain
+                    // Don't check current chain as eth_chainId is not supported by embedded wallet
+                    await switchChainAsync({ chainId: base.id });
+                    console.log('✅ Switched to Base network via wagmi');
+                    
+                    // Wait for wallet to sync with new chain
+                    console.log('⏳ Waiting for wallet to sync...');
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    console.log('✅ Wallet sync complete');
+                } catch (switchError: any) {
+                    console.error('❌ Failed to switch chain:', switchError);
+                    throw new Error('Failed to switch to Base network. Please try again.');
+                }
+            } else if (window.ethereum) {
+                const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+                const baseChainId = '0x2105'; // Base Mainnet = 8453 in hex
+                
+                if (currentChainId !== baseChainId) {
+                    console.log(`🔄 Switching from chain ${currentChainId} to Base (${baseChainId})`);
+                    try {
+                        await window.ethereum.request({
+                            method: 'wallet_switchEthereumChain',
+                            params: [{ chainId: baseChainId }],
+                        });
+                        console.log('✅ Switched to Base network');
+                    } catch (switchError: any) {
+                        // This error code indicates that the chain has not been added to MetaMask
+                        if (switchError.code === 4902) {
+                            try {
+                                await window.ethereum.request({
+                                    method: 'wallet_addEthereumChain',
+                                    params: [{
+                                        chainId: baseChainId,
+                                        chainName: 'Base',
+                                        nativeCurrency: {
+                                            name: 'Ethereum',
+                                            symbol: 'ETH',
+                                            decimals: 18
+                                        },
+                                        rpcUrls: ['https://mainnet.base.org'],
+                                        blockExplorerUrls: ['https://basescan.org']
+                                    }],
+                                });
+                                console.log('✅ Added and switched to Base network');
+                            } catch (addError) {
+                                throw new Error('Please add Base network to your wallet and try again.');
+                            }
+                        } else {
+                            throw new Error('Please switch to Base network in your wallet and try again.');
+                        }
+                    }
+                }
+            }
+
+            const provider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+            const buyerAddress = userAddress;
+
+            // Verify we're on Base network
+            const network = await provider.getNetwork();
+            console.log("🌐 Provider network:", network.chainId, network.name);
+
+            // Check user balance from provider
+            const balance = await provider.getBalance(buyerAddress);
+            console.log("💳 User balance on Base:", ethers.formatEther(balance), "ETH");
+            
+            if (balance === BigInt(0)) {
+                throw new Error(
+                    "Your wallet has 0 ETH on Base network. " +
+                    "Please deposit ETH to your wallet on Base chain before purchasing."
+                );
+            }
+
+            // Get fulfillment data from OpenSea
+            const fulfillmentRes = await fetch("https://api.opensea.io/api/v2/listings/fulfillment_data", {
+                method: "POST",
+                headers: {
+                    accept: "application/json",
+                    "content-type": "application/json",
+                    "x-api-key": `${apiKey}`,
+                },
+                body: JSON.stringify({
+                    listing: {
+                        hash: order.order_hash,
+                        chain: "base",
+                        protocol_address: order.protocol_address,
+                    },
+                    fulfiller: { address: buyerAddress },
+                }),
+            });
+
+            if (!fulfillmentRes.ok) {
+                const errorText = await fulfillmentRes.text();
+                console.error("❌ Fulfillment API error:", fulfillmentRes.status, errorText);
+                throw new Error("Failed to get fulfillment data from OpenSea");
+            }
+
+            const fulfillmentResponse = await fulfillmentRes.json();
+            console.log("📦 Fulfillment response:", fulfillmentResponse);
+
+            const { fulfillment_data } = fulfillmentResponse;
+            
+            if (!fulfillment_data?.transaction?.input_data) {
+                console.error("❌ No input data in fulfillment response");
+                throw new Error("Invalid fulfillment data from OpenSea");
+            }
+
+            // Check if it's a basicOrder or advancedOrder format
+            const isBasicOrder = !!fulfillment_data.transaction.input_data.parameters;
+            const isAdvancedOrder = !!fulfillment_data.transaction.input_data.advancedOrder;
+            
+            console.log("📋 Order type:", { isBasicOrder, isAdvancedOrder });
+
+            let advancedOrder;
+            
+            if (isAdvancedOrder) {
+                // Use the advancedOrder directly from OpenSea's fulfillment response
+                advancedOrder = fulfillment_data.transaction.input_data.advancedOrder;
+            } else if (isBasicOrder && fulfillment_data.orders?.[0]) {
+                // Convert basicOrder to advancedOrder format using the orders array
+                const orderData = fulfillment_data.orders[0];
+                advancedOrder = {
+                    parameters: orderData.parameters,
+                    signature: orderData.signature,
+                    numerator: 1,
+                    denominator: 1,
+                    extraData: "0x"
+                };
+                console.log("✅ Converted basicOrder to advancedOrder format");
+            } else {
+                console.error("❌ Unknown fulfillment format");
+                throw new Error("Invalid fulfillment data from OpenSea");
+            }
+
+            const seaport = new Seaport(provider, {
+                overrides: { contractAddress: order.protocol_address },
+            });
+
+            console.log("📦 Advanced order:", advancedOrder);
+
+            const { parameters, signature } = advancedOrder;
+
+            console.log("📋 Parameters:", parameters);
+            console.log("📋 Consideration items:", parameters?.consideration);
+
+            const value = parameters.consideration
+                .filter((i: any) => i.token === ethers.ZeroAddress)
+                .reduce((sum: bigint, i: any) => sum + BigInt(i.startAmount), BigInt(0));
+
+            console.log("💵 Calculated value:", value);
+
+            // Extract token ID from the offer (what the seller is offering - the NFT)
+            const nftOffer = parameters.offer.find((item: any) => 
+                item.itemType === 2 || item.itemType === 3 // ERC721 or ERC1155
+            );
+            const tokenId = nftOffer?.identifierOrCriteria || "unknown";
+
+            console.log("💰 Purchase details:", {
+                value: ethers.formatEther(value),
+                buyerAddress,
+                orderHash: order.order_hash,
+                tokenId: tokenId,
+                nftContract: nftOffer?.token || "unknown"
+            });
+
+            // Basic check: user must have at least the NFT price
+            if (balance < value) {
+                throw new Error(
+                    `Insufficient balance. Need ${ethers.formatEther(value)} ETH for NFT. ` +
+                    `Current balance: ${ethers.formatEther(balance)} ETH`
+                );
+            }
+
+            // Verify NFT ownership and approval
+            const nftContract = new ethers.Contract(
+                parameters.offer[0].token,
+                [
+                    'function ownerOf(uint256 tokenId) view returns (address)',
+                    'function getApproved(uint256 tokenId) view returns (address)',
+                    'function isApprovedForAll(address owner, address operator) view returns (bool)'
+                ],
+                provider
+            );
+
+            try {
+                const tokenId = parameters.offer[0].identifierOrCriteria;
+                const currentOwner = await nftContract.ownerOf(tokenId);
+
+                if (currentOwner.toLowerCase() !== parameters.offerer.toLowerCase()) {
+                    throw new Error("NFT is no longer owned by the seller. The listing is invalid.");
+                }
+
+                // Check if Seaport is approved
+                const approvedAddress = await nftContract.getApproved(tokenId);
+                const isApprovedForAll = await nftContract.isApprovedForAll(parameters.offerer, seaport.contract.target);
+
+                // Check if using a conduit (OpenSea's transfer proxy)
+                const usingConduit = parameters.conduitKey !== "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+                if (!isApprovedForAll && approvedAddress.toLowerCase() !== seaport.contract.target.toString().toLowerCase()) {
+                    if (!usingConduit) {
+                        throw new Error(
+                            "This listing cannot be fulfilled because the seller has not approved the marketplace contract. " +
+                            "The seller needs to approve the transfer before this NFT can be purchased. " +
+                            "Please try a different listing or contact the seller."
+                        );
+                    }
+                }
+            } catch (verifyError: any) {
+                if (verifyError.message.includes("owned") || verifyError.message.includes("approved")) {
+                    throw verifyError;
+                }
+                // If it's a contract call error, continue anyway
+            }
+
+            // Prepare transaction data
+            let calldata;
+            let transactionValue = value;
+            
+            console.log("🔍 Fulfillment transaction data:", fulfillment_data.transaction);
+            
+            if (isBasicOrder) {
+                // For basicOrder, we need to encode the fulfillBasicOrder call
+                // Use the Seaport library to handle this
+                const basicOrderParams = fulfillment_data.transaction.input_data.parameters;
+                
+                // Convert to the format Seaport expects
+                const basicOrderParameters = {
+                    considerationToken: basicOrderParams.considerationToken,
+                    considerationIdentifier: basicOrderParams.considerationIdentifier,
+                    considerationAmount: basicOrderParams.considerationAmount,
+                    offerer: basicOrderParams.offerer,
+                    zone: basicOrderParams.zone,
+                    offerToken: basicOrderParams.offerToken,
+                    offerIdentifier: basicOrderParams.offerIdentifier,
+                    offerAmount: basicOrderParams.offerAmount,
+                    basicOrderType: basicOrderParams.basicOrderType,
+                    startTime: basicOrderParams.startTime,
+                    endTime: basicOrderParams.endTime,
+                    zoneHash: basicOrderParams.zoneHash,
+                    salt: basicOrderParams.salt,
+                    offererConduitKey: basicOrderParams.offererConduitKey,
+                    fulfillerConduitKey: basicOrderParams.fulfillerConduitKey,
+                    totalOriginalAdditionalRecipients: basicOrderParams.totalOriginalAdditionalRecipients,
+                    additionalRecipients: basicOrderParams.additionalRecipients,
+                    signature: basicOrderParams.signature
+                };
+                
+                // Use the efficient fulfillBasicOrder function
+                calldata = seaport.contract.interface.encodeFunctionData("fulfillBasicOrder", [
+                    basicOrderParameters
+                ]);
+                
+                transactionValue = BigInt(fulfillment_data.transaction.value || value);
+                console.log("📦 Using fulfillBasicOrder with encoded parameters");
+            } else {
+                // For advancedOrder, encode it ourselves
+                const criteriaResolvers = fulfillment_data.transaction.input_data.criteriaResolvers || [];
+                const fulfillerConduitKey = fulfillment_data.transaction.input_data.fulfillerConduitKey;
+                const recipient = fulfillment_data.transaction.input_data.recipient;
+
+                calldata = seaport.contract.interface.encodeFunctionData("fulfillAdvancedOrder", [
+                    advancedOrder,
+                    criteriaResolvers,
+                    fulfillerConduitKey,
+                    recipient,
+                ]);
+                console.log("📦 Using fulfillAdvancedOrder");
+            }
+            
+            const finalValue = transactionValue;
+
+            // Estimate gas from network and check total balance needed
+            let estimatedGasLimit: bigint;
+            try {
+                // Use provider for gas estimation to ensure we're on Base chain
+                const gasEstimate = await provider.estimateGas({
+                    from: buyerAddress,
+                    to: seaport.contract.target as string,
+                    value: finalValue,
+                    data: calldata,
+                }).catch((gasError: any) => {
+                    // Catch gas estimation errors immediately
+                    console.error("❌ Gas estimation error:", gasError);
+                    console.log("🔍 Error details:", {
+                        data: gasError?.data,
+                        code: gasError?.code,
+                        message: gasError?.message
+                    });
+                    
+                    // Check if it's an insufficient funds error
+                    if (
+                        gasError?.message?.toLowerCase().includes("insufficient funds") ||
+                        gasError?.message?.toLowerCase().includes("exceeds the balance") ||
+                        gasError?.details?.toLowerCase().includes("insufficient funds") ||
+                        gasError?.name?.includes("EstimateGasExecutionError") ||
+                        gasError?.shortMessage?.toLowerCase().includes("insufficient funds") ||
+                        gasError?.cause?.message?.toLowerCase().includes("insufficient funds")
+                    ) {
+                        throw new Error("INSUFFICIENT_BALANCE");
+                    }
+                    
+                    // Check for Seaport OrderAlreadyFilled error (0x10fda3e1)
+                    if (gasError?.data?.startsWith("0x10fda3e1")) {
+                        console.log("⚠️ Detected OrderAlreadyFilled error");
+                        throw new Error("ORDER_ALREADY_FILLED");
+                    }
+                    
+                    // Check if it's a contract revert (execution reverted)
+                    // This could be various contract errors
+                    if (
+                        gasError?.message?.toLowerCase().includes("execution reverted") ||
+                        gasError?.code === "CALL_EXCEPTION"
+                    ) {
+                        // Check the error data for specific Seaport errors
+                        if (gasError?.data) {
+                            console.log("🔍 Checking error data:", gasError.data);
+                            // OrderAlreadyFilled
+                            if (gasError.data.startsWith("0x10fda3e1")) {
+                                console.log("⚠️ Detected OrderAlreadyFilled error from data");
+                                throw new Error("ORDER_ALREADY_FILLED");
+                            }
+                            // OrderIsCancelled (0x1a515574)
+                            if (gasError.data.startsWith("0x1a515574")) {
+                                console.log("⚠️ Detected OrderIsCancelled error");
+                                throw new Error("ORDER_CANCELLED");
+                            }
+                            // OrderPartiallyFilled (0xee9e0e63)
+                            if (gasError.data.startsWith("0xee9e0e63")) {
+                                console.log("⚠️ Detected OrderPartiallyFilled error");
+                                throw new Error("ORDER_PARTIALLY_FILLED");
+                            }
+                        }
+                        // Generic contract revert - could be order expired or invalid
+                        console.log("⚠️ Generic contract revert, treating as ORDER_UNAVAILABLE");
+                        throw new Error("ORDER_UNAVAILABLE");
+                    }
+                    
+                    throw gasError;
+                });
+                
+                estimatedGasLimit = gasEstimate;
+                
+                // Get current gas price from Base network
+                const feeData = await provider.getFeeData();
+                const gasPrice = feeData.gasPrice || BigInt(1000000000); // fallback to 1 gwei
+                
+                // Calculate total gas cost (add 20% buffer for gas price fluctuation)
+                const estimatedGasCost = (estimatedGasLimit * gasPrice * BigInt(120)) / BigInt(100);
+                const totalNeeded = finalValue + estimatedGasCost;
+                
+                console.log("⛽ Gas estimation:", {
+                    gasLimit: estimatedGasLimit.toString(),
+                    gasPrice: ethers.formatUnits(gasPrice, "gwei") + " gwei",
+                    estimatedGasCost: ethers.formatEther(estimatedGasCost) + " ETH",
+                    totalNeeded: ethers.formatEther(totalNeeded) + " ETH",
+                    currentBalance: ethers.formatEther(balance) + " ETH",
+                });
+                
+                // Check if user has enough for NFT + actual gas
+                if (balance < totalNeeded) {
+                    throw new Error("INSUFFICIENT_BALANCE");
+                }
+            } catch (estimateError: any) {
+                console.error("❌ Gas estimation failed:", estimateError);
+
+                // Check if it's an insufficient funds error
+                if (
+                    estimateError?.message === "INSUFFICIENT_BALANCE" ||
+                    estimateError?.message?.toLowerCase().includes("insufficient funds") ||
+                    estimateError?.message?.toLowerCase().includes("exceeds the balance") ||
+                    estimateError?.details?.toLowerCase().includes("insufficient funds") ||
+                    estimateError?.name?.includes("EstimateGasExecutionError") ||
+                    estimateError?.shortMessage?.toLowerCase().includes("insufficient funds")
+                ) {
+                    // Don't re-throw, just set the toast and return early
+                    setPendingPurchase(false);
+                    setToastTitle("Insufficient Balance");
+                    setToastMessage("You need more ETH to complete this purchase.");
+                    setShowToast(true);
+                    setIsBuying(false);
+                    return;
+                }
+
+                // Check for order-specific errors
+                if (estimateError?.message === "ORDER_ALREADY_FILLED") {
+                    setPendingPurchase(false);
+                    setToastTitle("Already Sold");
+                    setToastMessage("This NFT has already been purchased. Please refresh the page to see available listings.");
+                    setShowToast(true);
+                    setIsBuying(false);
+                    return;
+                }
+
+                if (estimateError?.message === "ORDER_CANCELLED") {
+                    setPendingPurchase(false);
+                    setToastTitle("Listing Cancelled");
+                    setToastMessage("This listing has been cancelled by the seller. Please refresh the page.");
+                    setShowToast(true);
+                    setIsBuying(false);
+                    return;
+                }
+
+                if (estimateError?.message === "ORDER_PARTIALLY_FILLED" || estimateError?.message === "ORDER_UNAVAILABLE") {
+                    setPendingPurchase(false);
+                    setToastTitle("Listing Unavailable");
+                    setToastMessage("This listing is no longer available. Please refresh the page to see current listings.");
+                    setShowToast(true);
+                    setIsBuying(false);
+                    return;
+                }
+
+                throw new Error(
+                    "Unable to estimate gas for this transaction. " +
+                    "The listing may be expired, already sold, or invalid. " +
+                    "Please refresh the page and try again."
+                );
+            }
+
+            // Check if order is expired
+            if (parameters.endTime && Number(parameters.endTime) < Math.floor(Date.now() / 1000)) {
+                throw new Error("This listing has expired. Please refresh the page.");
+            }
+
+            // Validate order parameters
+            if (!parameters.offerer || !parameters.zone || !parameters.offer || !parameters.consideration) {
+                console.error("Invalid order parameters:", parameters);
+                throw new Error("Invalid order data from OpenSea. Please try refreshing the page.");
+            }
+
+            // Validate Seaport contract address
+            if (!order.protocol_address || order.protocol_address === ethers.ZeroAddress) {
+                console.error("Invalid protocol address:", order.protocol_address);
+                throw new Error("Invalid Seaport contract address.");
+            }
+
+
+
+            let txHash: string;
+
+            // Use Farcaster SDK provider directly for miniapp (Wagmi has issues with connector priority)
+            if (isMinitapp && farcasterWallet && userAddress === farcasterWallet) {
+                console.log("Using Farcaster SDK Ethereum provider for buy");
+
+                const farcasterProvider = await getFarcasterProvider();
+                if (!farcasterProvider) {
+                    throw new Error("Failed to get Farcaster Ethereum provider");
+                }
+
+                console.log("📤 Buy transaction params:", {
+                    from: buyerAddress,
+                    to: seaport.contract.target,
+                    value: ethers.formatEther(finalValue) + " ETH",
+                    orderHash: order.order_hash
+                });
+
+                // Use the Farcaster provider directly
+                txHash = await farcasterProvider.request({
+                    method: "eth_sendTransaction",
+                    params: [
+                        {
+                            from: buyerAddress as `0x${string}`,
+                            to: seaport.contract.target as `0x${string}`,
+                            value: "0x" + finalValue.toString(16) as `0x${string}`,
+                            data: calldata as `0x${string}`,
+                            chainId: "0x" + base.id.toString(16) as `0x${string}`, // Add chainId for better display
+                        },
+                    ],
+                });
+                console.log("✅ Farcaster provider buy transaction submitted:", txHash);
+            } else {
+                // Standard EIP-1193 for other environments
+                try {
+                    // Send transaction - let wallet handle gas estimation automatically
+                    console.log("📤 Sending transaction via client.request");
+                    console.log("📤 Client type:", client.constructor?.name);
+                    console.log("📤 Transaction params:", {
+                        from: buyerAddress,
+                        to: seaport.contract.target,
+                        value: "0x" + finalValue.toString(16),
+                        dataLength: calldata.length
+                    });
+                    
+                    // Add timeout to prevent infinite hanging
+                    console.log("⏳ Waiting for user confirmation...");
+                    console.log("📤 Using client provider");
+                    console.log("📤 From address (should match primary):", buyerAddress);
+                    
+                    // Use the client provider which should be connected to the primary wallet
+                    const txPromise = client.request({
+                        method: "eth_sendTransaction",
+                        params: [
+                            {
+                                from: buyerAddress,
+                                to: seaport.contract.target as string,
+                                value: "0x" + finalValue.toString(16),
+                                data: calldata,
+                            },
+                        ],
+                    }).then((hash: any) => {
+                        console.log("✅ Transaction hash received:", hash);
+                        return hash;
+                    }).catch((err: any) => {
+                        console.error("❌ Transaction error:", err);
+                        throw err;
+                    });
+                    
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => {
+                            console.error("⏰ Transaction request timeout");
+                            reject(new Error("Transaction request timeout - wallet may not be responding"));
+                        }, 120000)
+                    );
+                    
+                    txHash = await Promise.race([txPromise, timeoutPromise]) as string;
+                    console.log("✅ Transaction submitted, hash:", txHash);
+                } catch (txError: any) {
+                    console.error("❌ Transaction error:", txError);
+
+                    if (txError.message?.includes("insufficient funds")) {
+                        throw new Error(`Insufficient ETH for gas + NFT price. Need ${ethers.formatEther(value)} ETH + gas fees.`);
+                    } else {
+                        throw new Error("Transaction failed: " + (txError.message || "Unknown error"));
+                    }
+                }
+            }
+
+            // Wait for confirmation with timeout
+            console.log("⏳ Waiting for transaction confirmation:", txHash);
+            
+            const receipt = await Promise.race([
+                provider.waitForTransaction(txHash),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error("Transaction confirmation timeout")), 60000)
+                )
+            ]);
+            
+            console.log("✅ Transaction receipt:", receipt);
+            
+            if (receipt?.status === 1) {
+                setPendingPurchase(false); // Hide pending toast
+                const modalData: any = await getModalData();
+                setModalData(modalData);
+                setModalOpen(true);
+                
+                // Refresh listings after successful purchase to show next available NFT
+                setTimeout(() => {
+                    fetchAvailableNfts();
+                }, 2000); // Wait 2 seconds for blockchain to update
+            } else {
+                setPendingPurchase(false); // Hide pending toast
+
+                const modalDataFailed: any = await getModalData();
+                setFailureTxHash(txHash);
+                setFailureImage(modalDataFailed.image);
+                setActiveOrder(true);
+                setFailureModalOpen(true);
+            }
+        } catch (error: any) {
+            console.error("❌ Purchase failed:", error);
+            setPendingPurchase(false); // Hide pending toast
+
+            if (
+                error?.code === 4001 ||
+                error?.message?.toLowerCase().includes("user rejected") ||
+                error?.message?.toLowerCase().includes("user denied")
+            ) {
+                setToastTitle("Transaction Rejected");
+                setToastMessage("You cancelled the purchase.");
+            } else if (
+                error?.code === "INSUFFICIENT_FUNDS" ||
+                error?.message?.toLowerCase().includes("insufficient funds") ||
+                error?.message?.toLowerCase().includes("insufficient balance") ||
+                error?.message?.toLowerCase().includes("0 eth on base") ||
+                error?.message?.toLowerCase().includes("exceeds the balance") ||
+                error?.details?.toLowerCase().includes("insufficient funds") ||
+                error?.name?.includes("EstimateGasExecutionError") ||
+                (error?.message?.toLowerCase().includes("need") && error?.message?.toLowerCase().includes("eth total"))
+            ) {
+                setToastTitle("Insufficient Balance");
+                setToastMessage("You need more ETH to complete this purchase.");
+            } else {
+                setToastTitle("Purchase Failed");
+                setToastMessage("⚠️ Something went wrong. Please try again.");
+            }
+            setShowToast(true);
+        } finally {
+            setIsBuying(false);
+        }
+    }
+
+
+    useEffect(() => {
+        if (showToast) {
+            const timer = setTimeout(() => {
+                setShowToast(false);
+            }, 6000);
+            return () => clearTimeout(timer);
+        }
+    }, [showToast]);
+
+    const getModalData = () => {
+        let currentItem;
+
+        if (activeTab === "Premium 500m² Plot" && sortedPremiumItems.length > 0) {
+            currentItem = sortedPremiumItems[0];
+            return {
+                id: currentItem.protocol_data.parameters.offer[0].identifierOrCriteria.toString(),
+                image: "/assets/images/apps/500m2.webp",
+                name: "Bitgrass - Premium Collection",
+                tier: "Premium" as const
+            };
+        }
+
+        if (activeTab === "Legendary 1000m² Plot" && sortedLegendaryItems.length > 0) {
+            currentItem = sortedLegendaryItems[0];
+            return {
+                id: currentItem.protocol_data.parameters.offer[0].identifierOrCriteria.toString(),
+                image: "/assets/images/apps/1000m2.webp",
+                name: "Bitgrass - Legendary Collection",
+                tier: "Legendary" as const
+            };
+        }
+
+        return {
+            id: "0",
+            image: activeTab === "Premium 500m² Plot" ? "/assets/images/apps/500m2.webp" : activeTab === "Legendary 1000m² Plot" ? "/assets/images/apps/1000m2.webp" : "/assets/images/apps/100m2.webp",
+            name: activeTab === "Premium 500m² Plot" ? "Bitgrass - Premium Collection" : activeTab === "Legendary 1000m² Plot" ? "Bitgrass - Legendary Collection" : "Bitgrass NFT Collection – Standard",
+            tier: (activeTab === "Premium 500m² Plot" ? "Premium" : activeTab === "Legendary 1000m² Plot" ? "Legendary" : "Standard") as "Standard" | "Premium" | "Legendary"
+        };
+    };
+
+    const handleTabChange = (tab: string) => {
+        if (tab === activeTab) return;
+
+        const tabId = Object.keys(tabIdToName).find(key => tabIdToName[key] === tab) || "standard";
+
+        setActiveTab(tab);
+
+        const newUrl = `/ownplot/${tabId}`;
+        if (window.location.pathname !== newUrl) {
+            window.history.replaceState(null, "", newUrl);
+        }
+    };
+
+    return (
+        <Fragment>
+            <div className="container">
+                <div className="container">
+                    {/* Tabs Header */}
+                    <div className="flex gap-[2rem] mt-6 p-[1.25rem]">
+                        {tabList.map((tab) => (
+                            <Link
+                                key={tab}
+                                href={`/ownplot/${Object.keys(tabIdToName).find(key => tabIdToName[key] === tab)}`}
+                                scroll={false}
+                            >
+                                <button
+                                    onClick={() => handleTabChange(tab)}
+                                    className={`text-sm max-[380px]:text-xs py-2 font-semibold ${activeTab === tab
+                                        ? "border-b-2 border-primary text-primary"
+                                        : ""
+                                        }`}
+                                >
+                                    {tab}
+                                </button>
+                            </Link>
+                        ))}
+                    </div>
+
+                    {/* Unique Content Per Tab */}
+                    <div className={`mt-6 ${activeTab === "Standard 100m² Plot" ? '' : 'hidden'}`}>
+                            <div className="box custom-box overflow-hidden mt-6">
+                                <div className="box-body">
+                                    <div className="grid grid-cols-12 md:gap-x-[3rem]">
+                                        <div className="xl:col-span-4 col-span-12">
+                                            <div>
+                                                <div className="flex items-center font-semibold mb-2">
+                                                    <span className="avatar avatar-xs avatar-rounded leading-none me-1 mt-1">
+                                                        <img src="/assets/images/brand-logos/favicon.ico" alt="" />
+                                                    </span>
+                                                    bitgrass.base.eth
+                                                </div>
+
+                                                <div className="w-full flex justify-center items-center rounded-lg overflow-hidden" style={{ backgroundColor: "transparent" }}>
+                                                    <div
+                                                        className="w-full flex justify-center items-center rounded-lg overflow-hidden shadow-md"
+                                                    >
+                                                        <img
+                                                            src="/assets/images/apps/100m2s.webp"
+                                                            alt="Custom NFT Preview"
+                                                            className="object-contain w-full transition-opacity duration-500 rounded-lg"
+                                                            style={{ opacity: imageOpacity.standard }}
+                                                            onLoad={() => {
+                                                                if (!imagesLoadedRef.current.standard) {
+                                                                    imagesLoadedRef.current.standard = true;
+                                                                    setImageOpacity(prev => ({ ...prev, standard: 1 }));
+                                                                }
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center justify-center gap-2 my-4">
+                                                    <p className="text-lg font-semibold">{mintPriceEth} ETH</p>
+                                                    <span className="text-gray-400">|</span>
+                                                    <p className="text-[0.8rem] text-[#8C9097]">~ ${mintPriceUsd} USD</p>
+                                                </div>
+                                                <div className="w-full h-full flex items-center justify-between" style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setQuantity((prev) => Math.max(1, prev - 1))}
+                                                        className="btn-qty"
+                                                    >
+                                                        −
+                                                    </button>
+                                                    <input
+                                                        type="number"
+                                                        value={quantity}
+                                                        min={1}
+                                                        onChange={(e) => {
+                                                            const val = Number(e.target.value);
+                                                            if (val >= 1) setQuantity(val);
+                                                        }}
+                                                        className="input-qty"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setQuantity((prev) => prev + 1)}
+                                                        className="btn-qty"
+                                                    >
+                                                        +
+                                                    </button>
+                                                </div>
+                                                <button
+                                                    className={`w-full bg-secondary text-white !font-medium m-0 btn btn-primary px-8 py-3 rounded-sm mt-2 flex items-center justify-center gap-2 ${
+                                                        (loading || !userAddress) 
+                                                        ? 'opacity-50 cursor-not-allowed' 
+                                                        : 'cursor-pointer'
+                                                    }`}
+                                                    onClick={() => handleMintAbi(quantity)}
+                                                    disabled={loading || !userAddress}
+                                                >
+                                                    {loading && (
+                                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                                                    )}
+                                                    {loading ? "Processing..." : "Buy Tokenized Plot"}
+                                                </button>
+
+                                            </div>
+                                        </div>
+                                        <div className="xl:col-span-8 col-span-12">
+                                            <div className="xxl:mt-0 mt-4">
+                                                <p className="text-[1.125rem] mb-4 font-semibold mb-0 text-hights" style={{ fontSize: "22px" }}>
+                                                    Bitgrass NFT Collection – Standard 100m² NFT
+                                                </p>
+                                                <div className="grid grid-cols-12 mb-6">
+                                                    <div className="xxl:col-span-3 xl:col-span-12 col-span-12">
+                                                        <p className="mb-1 text-[0.8rem] text-[#8C9097] ">Price</p>
+                                                        <div className="flex items-center font-semibold text-hights" style={{ fontSize: "22px" }}>
+                                                            <span className="avatar avatar-sm avatar-rounded leading-none me-1 mt-1">
+                                                                <img src="/assets/images/faces/eth.svg" alt="" />
+                                                            </span>
+                                                            0.05 ETH
+                                                        </div>
+                                                    </div>
+                                                    <div className="xxl:col-span-4 xl:col-span-6 col-span-12 xxl:mt-0 mt-4">
+                                                        <p className="mb-1 text-[0.8rem] text-[#8C9097] ">Carbon Removal Potential</p>
+                                                        <div className="flex items-center font-semibold">
+                                                            <span className="avatar avatar-sm avatar-rounded leading-none me-1 mt-1">
+                                                                <img src="/assets/images/faces/Leaf.svg" alt="" />
+                                                            </span>
+                                                            Up to &nbsp;
+                                                            <span className="font-semibold text-hights" style={{ fontSize: "22px" }}>
+                                                                0.1 tCO2 /year
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                {/* Rest of the Standard tab content remains the same */}
+                                                <div className="mb-4">
+                                                    <p className="text-[0.8rem] text-[#8C9097]  mb-1">Description :</p>
+                                                    <p>
+                                                        A <b className="text-hights">Tokenized 100 m² Land plot</b> that grants you the <b className="text-hights">Right of Use for Carbon Credits</b>.
+                                                        <br />
+                                                        Experience the transition from tokenized land to tokenized carbon credits with <b className="text-hights">#RWA</b>.
+                                                    </p>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <div className="grid grid-cols-12 sm:gap-x-6 justify-center">
+                                                        <div className="xxl:col-span-4 col-span-12">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M29.9999 29.0502H1.99994C1.63994 29.0502 1.29994 28.8602 1.09994 28.5502C0.909944 28.2402 0.889944 27.8502 1.04994 27.5302L5.04994 19.5302C5.22994 19.1702 5.58994 18.9502 5.98994 18.9502H12.2899C12.8699 18.9502 13.3399 19.4202 13.3399 20.0002C13.3399 20.5802 12.8699 21.0502 12.2899 21.0502H6.63994L3.68994 26.9402H28.2799L25.0399 20.4602C24.7799 19.9402 24.9899 19.3102 25.5099 19.0502C26.0299 18.7902 26.6599 19.0002 26.9199 19.5202L30.9199 27.5202C31.0799 27.8502 31.0699 28.2302 30.8699 28.5402C30.6799 28.8502 30.3399 29.0402 29.9699 29.0402L29.9999 29.0502ZM19.4999 24.5502C19.2099 24.5502 18.9399 24.4302 18.7399 24.2202C18.4399 23.9102 11.5099 16.4802 11.5099 10.4502C11.5099 6.0402 15.0999 2.4502 19.5099 2.4502C23.9199 2.4502 27.5099 5.9602 27.5099 10.4502C27.5099 16.5902 20.5699 23.9202 20.2699 24.2302C20.0699 24.4402 19.7999 24.5602 19.5099 24.5602L19.4999 24.5502ZM19.4999 4.5502C16.2499 4.5502 13.6099 7.1902 13.6099 10.4402C13.6099 14.5702 17.7599 19.8602 19.5099 21.9102C21.2599 19.8802 25.3999 14.6402 25.3999 10.4402C25.3999 7.1302 22.8099 4.5502 19.5099 4.5502H19.4999ZM19.4999 14.0302C17.4699 14.0302 15.8199 12.3802 15.8199 10.3502C15.8199 8.3202 17.4699 6.6702 19.4999 6.6702C21.5299 6.6702 23.1799 8.3202 23.1799 10.3502C23.1799 12.3802 21.5299 14.0302 19.4999 14.0302ZM19.4999 8.7602C18.6299 8.7602 17.9199 9.4702 17.9199 10.3402C17.9199 11.2102 18.6299 11.9202 19.4999 11.9202C20.3699 11.9202 21.0799 11.2102 21.0799 10.3402C21.0799 9.4702 20.3699 8.7602 19.4999 8.7602Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">Backed by Real Land</p>
+                                                                <p>  Each NFT is tied to real land</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M23 11.1962V10.5C23 7.365 18.2712 5 12 5C5.72875 5 1 7.365 1 10.5V15.5C1 18.1112 4.28125 20.1863 9 20.8075V21.5C9 24.635 13.7288 27 20 27C26.2712 27 31 24.635 31 21.5V16.5C31 13.9125 27.8225 11.835 23 11.1962ZM29 16.5C29 18.1525 25.1512 20 20 20C19.5337 20 19.0712 19.9838 18.615 19.9538C21.3112 18.9713 23 17.375 23 15.5V13.2175C26.7338 13.7737 29 15.2838 29 16.5ZM9 18.7812V15.8075C9.99472 15.9371 10.9969 16.0014 12 16C13.0031 16.0014 14.0053 15.9371 15 15.8075V18.7812C14.0068 18.928 13.004 19.0011 12 19C10.996 19.0011 9.99324 18.928 9 18.7812ZM21 13.7413V15.5C21 16.5488 19.4488 17.675 17 18.3587V15.4375C18.6137 15.0462 19.98 14.4638 21 13.7413ZM12 7C17.1512 7 21 8.8475 21 10.5C21 12.1525 17.1512 14 12 14C6.84875 14 3 12.1525 3 10.5C3 8.8475 6.84875 7 12 7ZM3 15.5V13.7413C4.02 14.4638 5.38625 15.0462 7 15.4375V18.3587C4.55125 17.675 3 16.5488 3 15.5ZM11 21.5V20.9788C11.3288 20.9913 11.6612 21 12 21C12.485 21 12.9587 20.9837 13.4237 20.9562C13.9403 21.1412 14.4665 21.2981 15 21.4263V24.3587C12.5512 23.675 11 22.5488 11 21.5ZM17 24.7812V21.8C17.9944 21.9337 18.9967 22.0005 20 22C21.0031 22.0014 22.0053 21.9371 23 21.8075V24.7812C21.0106 25.0729 18.9894 25.0729 17 24.7812ZM25 24.3587V21.4375C26.6137 21.0462 27.98 20.4637 29 19.7412V21.5C29 22.5488 27.4488 23.675 25 24.3587Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">$BTG Rewards</p>
+                                                                <p>Earn $BTG via Vesting</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M30.9536 5.98633C30.9393 5.74168 30.8357 5.5108 30.6624 5.33752C30.4891 5.16424 30.2583 5.06061 30.0136 5.04633C23.5436 4.67133 18.3486 6.63883 16.1161 10.3238C14.6411 12.7601 14.6436 15.7188 16.0961 18.5413C15.2694 19.5255 14.6652 20.6768 14.3249 21.9163L12.2911 19.8751C13.2686 17.8338 13.2311 15.7063 12.1661 13.9388C10.5161 11.2151 6.70737 9.75508 1.97862 10.0326C1.73398 10.0469 1.5031 10.1505 1.32982 10.3238C1.15653 10.4971 1.05291 10.7279 1.03862 10.9726C0.759874 15.7013 2.22112 19.5101 4.94487 21.1601C5.84371 21.7092 6.87656 21.9999 7.92987 22.0001C8.95225 21.9875 9.95872 21.7453 10.8749 21.2913L13.9999 24.4163V28.0001C13.9999 28.2653 14.1052 28.5196 14.2928 28.7072C14.4803 28.8947 14.7347 29.0001 14.9999 29.0001C15.2651 29.0001 15.5194 28.8947 15.707 28.7072C15.8945 28.5196 15.9999 28.2653 15.9999 28.0001V24.3138C15.9954 22.7229 16.5368 21.1787 17.5336 19.9388C18.8198 20.611 20.2463 20.9707 21.6974 20.9888C23.1003 20.9934 24.4773 20.6101 25.6761 19.8813C29.3611 17.6513 31.3336 12.4563 30.9536 5.98633ZM5.97612 19.4501C4.05862 18.2888 2.97362 15.5401 2.99987 12.0001C6.53987 11.9701 9.28862 13.0588 10.4499 14.9763C11.0561 15.9763 11.1549 17.1426 10.7574 18.3438L7.70612 15.2926C7.51706 15.113 7.26531 15.0143 7.00455 15.0176C6.74379 15.021 6.49465 15.126 6.31025 15.3104C6.12584 15.4948 6.02077 15.744 6.01744 16.0048C6.0141 16.2655 6.11275 16.5173 6.29237 16.7063L9.34362 19.7576C8.14237 20.1551 6.97738 20.0563 5.97612 19.4501ZM24.6399 18.1726C22.9649 19.1863 20.9961 19.2638 18.9961 18.4226L25.7074 11.7101C25.887 11.521 25.9857 11.2693 25.9823 11.0085C25.979 10.7477 25.8739 10.4986 25.6895 10.3142C25.5051 10.1298 25.256 10.0247 24.9952 10.0214C24.7344 10.018 24.4827 10.1167 24.2936 10.2963L17.5811 17.0001C16.7361 15.0001 16.8124 13.0301 17.8311 11.3563C19.5736 8.48133 23.7061 6.87883 28.9974 7.00258C29.1174 12.2926 27.5174 16.4301 24.6399 18.1726Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">NFT staking</p>
+                                                                <p>Earn TCO₂ starting in 2026</p>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[0.8rem] text-[#8C9097]  mb-2 ">NFT Details :</p>
+                                                    <div className="table-responsive">
+                                                        <table className="table table-bordered whitespace-nowrap min-w-full">
+                                                            <tbody>
+                                                                <tr><th className="font-semibold text-start">Type</th><td>ERC-721</td></tr>
+                                                                <tr><th className="font-semibold text-start">Rarity</th><td>Standard</td></tr>
+                                                                <tr><th className="font-semibold text-start">Standard Supply</th><td>2000 NFTs</td></tr>
+                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>100 m² (each NFT corresponds to a real land plot)</td></tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                    </div>
+                    <div className={`mt-6 ${activeTab === "Premium 500m² Plot" ? '' : 'hidden'}`}>
+                            <div className="box custom-box overflow-hidden mt-6">
+                                <div className="box-body">
+                                    <div className="grid grid-cols-12 md:gap-x-[3rem]">
+                                        <div className="xl:col-span-4 col-span-12">
+                                            <div>
+                                                <div className="flex items-center font-semibold mb-2">
+                                                    <span className="avatar avatar-xs avatar-rounded leading-none me-1 mt-1">
+                                                        <img src="/assets/images/brand-logos/favicon.ico" alt="" />
+                                                    </span>
+                                                    bitgrass.base.eth
+                                                </div>
+
+                                                <div className="w-full flex justify-center items-center rounded-lg overflow-hidden" style={{ backgroundColor: "transparent" }}>
+                                                    <div
+                                                        className="w-full flex justify-center items-center rounded-lg overflow-hidden shadow-md"
+                                                    >
+                                                        <img
+                                                            src="/assets/images/apps/500m2s.webp"
+                                                            alt="Custom NFT Preview"
+                                                            className="object-contain w-full transition-opacity duration-500 rounded-lg"
+                                                            style={{ opacity: imageOpacity.premium }}
+                                                            onLoad={() => {
+                                                                if (!imagesLoadedRef.current.premium) {
+                                                                    imagesLoadedRef.current.premium = true;
+                                                                    setImageOpacity(prev => ({ ...prev, premium: 1 }));
+                                                                }
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <button
+                                                    className={`w-full bg-secondary text-white !font-medium m-0 btn btn-primary px-8 py-3 rounded-sm mt-6 flex items-center justify-center gap-2 ${
+                                                        (isLoadingFetchAvailable || isBuying || !listedPremiumItems[0]) 
+                                                        ? 'opacity-50 cursor-not-allowed' 
+                                                        : 'cursor-pointer'
+                                                    }`}
+                                                    onClick={() => handleBuy(listedPremiumItems[0], "Premium")}
+                                                    disabled={isLoadingFetchAvailable || isBuying || !listedPremiumItems[0]}
+                                                >
+                                                    {isBuying && (
+                                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                                                    )}
+                                                    {isBuying ? "Processing..." : "Buy Tokenized Plot"}
+                                                </button>
+
+
+                                            </div>
+                                        </div>
+                                        <div className="xl:col-span-8 col-span-12">
+                                            <div className="xxl:mt-0 mt-4">
+                                                <p className="text-[1.125rem] mb-4 font-semibold mb-0 text-hights" style={{ fontSize: "22px" }}>
+                                                    Bitgrass NFT Collection – Premium 500m² NFT
+                                                </p>
+                                                <div className="grid grid-cols-12 mb-6">
+                                                    <div className="xxl:col-span-3 xl:col-span-12 col-span-12">
+                                                        <p className="mb-1 text-[0.8rem] text-[#8C9097] ">Price</p>
+                                                        <div className="flex items-center font-semibold text-hights" style={{ fontSize: "22px" }}>
+                                                            <span className="avatar avatar-sm avatar-rounded leading-none me-1 mt-1">
+                                                                <img src="/assets/images/faces/eth.svg" alt="" />
+                                                            </span>
+                                                            0.2 ETH
+                                                        </div>
+                                                    </div>
+                                                    <div className="xxl:col-span-4 xl:col-span-6 col-span-12 xxl:mt-0 mt-4">
+                                                        <p className="mb-1 text-[0.8rem] text-[#8C9097] ">Carbon Removal Potential</p>
+                                                        <div className="flex items-center font-semibold">
+                                                            <span className="avatar avatar-sm avatar-rounded leading-none me-1 mt-1">
+                                                                <img src="/assets/images/faces/Leaf.svg" alt="" />
+                                                            </span>
+                                                            Up to &nbsp;
+                                                            <span className="font-semibold text-hights" style={{ fontSize: "22px" }}>
+                                                                0.5 tCO2 /year
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <p className="text-[0.8rem] text-[#8C9097] mb-1">Description :</p>
+                                                    <p>
+                                                        A <b className="text-hights">Tokenized 500 m² Land plot</b> that grants you the <b className="text-hights">Right of Use for Carbon Credits</b>.
+                                                        <br />
+                                                        Experience the transition from tokenized land to tokenized carbon credits with <b className="text-hights">#RWA</b>.
+                                                    </p>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <div className="grid grid-cols-12 sm:gap-x-6 justify-center">
+                                                        <div className="xxl:col-span-4 col-span-12">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M29.9999 29.0502H1.99994C1.63994 29.0502 1.29994 28.8602 1.09994 28.5502C0.909944 28.2402 0.889944 27.8502 1.04994 27.5302L5.04994 19.5302C5.22994 19.1702 5.58994 18.9502 5.98994 18.9502H12.2899C12.8699 18.9502 13.3399 19.4202 13.3399 20.0002C13.3399 20.5802 12.8699 21.0502 12.2899 21.0502H6.63994L3.68994 26.9402H28.2799L25.0399 20.4602C24.7799 19.9402 24.9899 19.3102 25.5099 19.0502C26.0299 18.7902 26.6599 19.0002 26.9199 19.5202L30.9199 27.5202C31.0799 27.8502 31.0699 28.2302 30.8699 28.5402C30.6799 28.8502 30.3399 29.0402 29.9699 29.0402L29.9999 29.0502ZM19.4999 24.5502C19.2099 24.5502 18.9399 24.4302 18.7399 24.2202C18.4399 23.9102 11.5099 16.4802 11.5099 10.4502C11.5099 6.0402 15.0999 2.4502 19.5099 2.4502C23.9199 2.4502 27.5099 5.9602 27.5099 10.4502C27.5099 16.5902 20.5699 23.9202 20.2699 24.2302C20.0699 24.4402 19.7999 24.5602 19.5099 24.5602L19.4999 24.5502ZM19.4999 4.5502C16.2499 4.5502 13.6099 7.1902 13.6099 10.4402C13.6099 14.5702 17.7599 19.8602 19.5099 21.9102C21.2599 19.8802 25.3999 14.6402 25.3999 10.4402C25.3999 7.1302 22.8099 4.5502 19.5099 4.5502H19.4999ZM19.4999 14.0302C17.4699 14.0302 15.8199 12.3802 15.8199 10.3502C15.8199 8.3202 17.4699 6.6702 19.4999 6.6702C21.5299 6.6702 23.1799 8.3202 23.1799 10.3502C23.1799 12.3802 21.5299 14.0302 19.4999 14.0302ZM19.4999 8.7602C18.6299 8.7602 17.9199 9.4702 17.9199 10.3402C17.9199 11.2102 18.6299 11.9202 19.4999 11.9202C20.3699 11.9202 21.0799 11.2102 21.0799 10.3402C21.0799 9.4702 20.3699 8.7602 19.4999 8.7602Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">Backed by Real Land</p>
+                                                                <p>  Each NFT is tied to real land</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M23 11.1962V10.5C23 7.365 18.2712 5 12 5C5.72875 5 1 7.365 1 10.5V15.5C1 18.1112 4.28125 20.1863 9 20.8075V21.5C9 24.635 13.7288 27 20 27C26.2712 27 31 24.635 31 21.5V16.5C31 13.9125 27.8225 11.835 23 11.1962ZM29 16.5C29 18.1525 25.1512 20 20 20C19.5337 20 19.0712 19.9838 18.615 19.9538C21.3112 18.9713 23 17.375 23 15.5V13.2175C26.7338 13.7737 29 15.2838 29 16.5ZM9 18.7812V15.8075C9.99472 15.9371 10.9969 16.0014 12 16C13.0031 16.0014 14.0053 15.9371 15 15.8075V18.7812C14.0068 18.928 13.004 19.0011 12 19C10.996 19.0011 9.99324 18.928 9 18.7812ZM21 13.7413V15.5C21 16.5488 19.4488 17.675 17 18.3587V15.4375C18.6137 15.0462 19.98 14.4638 21 13.7413ZM12 7C17.1512 7 21 8.8475 21 10.5C21 12.1525 17.1512 14 12 14C6.84875 14 3 12.1525 3 10.5C3 8.8475 6.84875 7 12 7ZM3 15.5V13.7413C4.02 14.4638 5.38625 15.0462 7 15.4375V18.3587C4.55125 17.675 3 16.5488 3 15.5ZM11 21.5V20.9788C11.3288 20.9913 11.6612 21 12 21C12.485 21 12.9587 20.9837 13.4237 20.9562C13.9403 21.1412 14.4665 21.2981 15 21.4263V24.3587C12.5512 23.675 11 22.5488 11 21.5ZM17 24.7812V21.8C17.9944 21.9337 18.9967 22.0005 20 22C21.0031 22.0014 22.0053 21.9371 23 21.8075V24.7812C21.0106 25.0729 18.9894 25.0729 17 24.7812ZM25 24.3587V21.4375C26.6137 21.0462 27.98 20.4637 29 19.7412V21.5C29 22.5488 27.4488 23.675 25 24.3587Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">$BTG Rewards</p>
+                                                                <p>Earn $BTG via Vesting</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M30.9536 5.98633C30.9393 5.74168 30.8357 5.5108 30.6624 5.33752C30.4891 5.16424 30.2583 5.06061 30.0136 5.04633C23.5436 4.67133 18.3486 6.63883 16.1161 10.3238C14.6411 12.7601 14.6436 15.7188 16.0961 18.5413C15.2694 19.5255 14.6652 20.6768 14.3249 21.9163L12.2911 19.8751C13.2686 17.8338 13.2311 15.7063 12.1661 13.9388C10.5161 11.2151 6.70737 9.75508 1.97862 10.0326C1.73398 10.0469 1.5031 10.1505 1.32982 10.3238C1.15653 10.4971 1.05291 10.7279 1.03862 10.9726C0.759874 15.7013 2.22112 19.5101 4.94487 21.1601C5.84371 21.7092 6.87656 21.9999 7.92987 22.0001C8.95225 21.9875 9.95872 21.7453 10.8749 21.2913L13.9999 24.4163V28.0001C13.9999 28.2653 14.1052 28.5196 14.2928 28.7072C14.4803 28.8947 14.7347 29.0001 14.9999 29.0001C15.2651 29.0001 15.5194 28.8947 15.707 28.7072C15.8945 28.5196 15.9999 28.2653 15.9999 28.0001V24.3138C15.9954 22.7229 16.5368 21.1787 17.5336 19.9388C18.8198 20.611 20.2463 20.9707 21.6974 20.9888C23.1003 20.9934 24.4773 20.6101 25.6761 19.8813C29.3611 17.6513 31.3336 12.4563 30.9536 5.98633ZM5.97612 19.4501C4.05862 18.2888 2.97362 15.5401 2.99987 12.0001C6.53987 11.9701 9.28862 13.0588 10.4499 14.9763C11.0561 15.9763 11.1549 17.1426 10.7574 18.3438L7.70612 15.2926C7.51706 15.113 7.26531 15.0143 7.00455 15.0176C6.74379 15.021 6.49465 15.126 6.31025 15.3104C6.12584 15.4948 6.02077 15.744 6.01744 16.0048C6.0141 16.2655 6.11275 16.5173 6.29237 16.7063L9.34362 19.7576C8.14237 20.1551 6.97738 20.0563 5.97612 19.4501ZM24.6399 18.1726C22.9649 19.1863 20.9961 19.2638 18.9961 18.4226L25.7074 11.7101C25.887 11.521 25.9857 11.2693 25.9823 11.0085C25.979 10.7477 25.8739 10.4986 25.6895 10.3142C25.5051 10.1298 25.256 10.0247 24.9952 10.0214C24.7344 10.018 24.4827 10.1167 24.2936 10.2963L17.5811 17.0001C16.7361 15.0001 16.8124 13.0301 17.8311 11.3563C19.5736 8.48133 23.7061 6.87883 28.9974 7.00258C29.1174 12.2926 27.5174 16.4301 24.6399 18.1726Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">NFT staking</p>
+                                                                <p>Earn TCO₂ starting in 2026</p>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[0.8rem] text-[#8C9097] mb-2">NFT Details :</p>
+                                                    <div className="table-responsive">
+                                                        <table className="table table-bordered whitespace-nowrap min-w-full">
+                                                            <tbody>
+                                                                <tr><th className="font-semibold text-start">Type</th><td>ERC-721</td></tr>
+                                                                <tr><th className="font-semibold text-start">Rarity</th><td>Premium</td></tr>
+                                                                <tr><th className="font-semibold text-start">Premium Supply</th><td>800 NFTs</td></tr>
+                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>500 m² (each NFT corresponds to a real land plot)</td></tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                    </div>
+                    <div className={`mt-6 ${activeTab === "Legendary 1000m² Plot" ? '' : 'hidden'}`}>
+                            <div className="box custom-box overflow-hidden mt-6">
+                                <div className="box-body">
+                                    <div className="grid grid-cols-12 md:gap-x-[3rem]">
+                                        <div className="xl:col-span-4 col-span-12">
+                                            <div>
+
+                                                <div className="flex items-center font-semibold mb-2">
+                                                    <span className="avatar avatar-xs avatar-rounded leading-none me-1 mt-1">
+                                                        <img src="/assets/images/brand-logos/favicon.ico" alt="" />
+                                                    </span>
+                                                    bitgrass.base.eth
+                                                </div>
+
+                                                <div className="w-full flex justify-center items-center rounded-lg overflow-hidden" style={{ backgroundColor: "transparent" }}>
+                                                    <div
+                                                        className="w-full flex justify-center items-center rounded-lg overflow-hidden shadow-md"
+                                                    >
+                                                        <img
+                                                            src="/assets/images/apps/1000m2s.webp"
+                                                            alt="Custom NFT Preview"
+                                                            className="object-contain w-full transition-opacity duration-500 rounded-lg"
+                                                            style={{ opacity: imageOpacity.legendary }}
+                                                            onLoad={() => {
+                                                                if (!imagesLoadedRef.current.legendary) {
+                                                                    imagesLoadedRef.current.legendary = true;
+                                                                    setImageOpacity(prev => ({ ...prev, legendary: 1 }));
+                                                                }
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <button
+                                                    className={`w-full bg-secondary text-white !font-medium m-0 btn btn-primary px-8 py-3 rounded-sm mt-6 flex items-center justify-center gap-2 ${
+                                                        (isLoadingFetchAvailable || isBuying || !listedLegendaryItems[0]) 
+                                                        ? 'opacity-50 cursor-not-allowed' 
+                                                        : 'cursor-pointer'
+                                                    }`}
+                                                    onClick={() => handleBuy(listedLegendaryItems[0], "Legendary")}
+                                                    disabled={isLoadingFetchAvailable || isBuying || !listedLegendaryItems[0]}
+                                                >
+                                                    {isBuying && (
+                                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                                                    )}
+                                                    {isBuying ? "Processing..." : "Buy Tokenized Plot"}
+                                                </button>
+
+                                            </div>
+                                        </div>
+                                        <div className="xl:col-span-8 col-span-12">
+                                            <div className="xxl:mt-0 mt-4">
+                                                <p className="text-[1.125rem] mb-4 font-semibold mb-0 text-hights" style={{ fontSize: "22px" }}>
+                                                    Bitgrass NFT Collection – Legendary 1000m² NFT
+                                                </p>
+                                                <div className="grid grid-cols-12 mb-6">
+                                                    <div className="xxl:col-span-3 xl:col-span-12 col-span-12">
+                                                        <p className="mb-1 text-[0.8rem] text-[#8C9097] ">Price</p>
+                                                        <div className="flex items-center font-semibold text-hights" style={{ fontSize: "22px" }}>
+                                                            <span className="avatar avatar-sm avatar-rounded leading-none me-1 mt-1">
+                                                                <img src="/assets/images/faces/eth.svg" alt="" />
+                                                            </span>
+                                                            0.35 ETH
+                                                        </div>
+                                                    </div>
+                                                    <div className="xxl:col-span-4 xl:col-span-6 col-span-12 xxl:mt-0 mt-4">
+                                                        <p className="mb-1 text-[0.8rem] text-[#8C9097] ">Carbon Removal Potential</p>
+                                                        <div className="flex items-center font-semibold">
+                                                            <span className="avatar avatar-sm avatar-rounded leading-none me-1 mt-1">
+                                                                <img src="/assets/images/faces/Leaf.svg" alt="" />
+                                                            </span>
+                                                            Up to &nbsp;
+                                                            <span className="font-semibold text-hights" style={{ fontSize: "22px" }}>
+                                                                1.0 tCO2 /year
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <p className="text-[0.8rem] text-[#8C9097] mb-1">Description :</p>
+                                                    <p>
+                                                        A <b className="text-hights">Tokenized 1000 m² Land plot</b> that grants you the <b className="text-hights">Right of Use for Carbon Credits</b>.
+                                                        <br />
+                                                        Experience the transition from tokenized land to tokenized carbon credits with <b className="text-hights">#RWA</b>.
+                                                    </p>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <div className="grid grid-cols-12 sm:gap-x-6 justify-center">
+                                                        <div className="xxl:col-span-4 col-span-12">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M29.9999 29.0502H1.99994C1.63994 29.0502 1.29994 28.8602 1.09994 28.5502C0.909944 28.2402 0.889944 27.8502 1.04994 27.5302L5.04994 19.5302C5.22994 19.1702 5.58994 18.9502 5.98994 18.9502H12.2899C12.8699 18.9502 13.3399 19.4202 13.3399 20.0002C13.3399 20.5802 12.8699 21.0502 12.2899 21.0502H6.63994L3.68994 26.9402H28.2799L25.0399 20.4602C24.7799 19.9402 24.9899 19.3102 25.5099 19.0502C26.0299 18.7902 26.6599 19.0002 26.9199 19.5202L30.9199 27.5202C31.0799 27.8502 31.0699 28.2302 30.8699 28.5402C30.6799 28.8502 30.3399 29.0402 29.9699 29.0402L29.9999 29.0502ZM19.4999 24.5502C19.2099 24.5502 18.9399 24.4302 18.7399 24.2202C18.4399 23.9102 11.5099 16.4802 11.5099 10.4502C11.5099 6.0402 15.0999 2.4502 19.5099 2.4502C23.9199 2.4502 27.5099 5.9602 27.5099 10.4502C27.5099 16.5902 20.5699 23.9202 20.2699 24.2302C20.0699 24.4402 19.7999 24.5602 19.5099 24.5602L19.4999 24.5502ZM19.4999 4.5502C16.2499 4.5502 13.6099 7.1902 13.6099 10.4402C13.6099 14.5702 17.7599 19.8602 19.5099 21.9102C21.2599 19.8802 25.3999 14.6402 25.3999 10.4402C25.3999 7.1302 22.8099 4.5502 19.5099 4.5502H19.4999ZM19.4999 14.0302C17.4699 14.0302 15.8199 12.3802 15.8199 10.3502C15.8199 8.3202 17.4699 6.6702 19.4999 6.6702C21.5299 6.6702 23.1799 8.3202 23.1799 10.3502C23.1799 12.3802 21.5299 14.0302 19.4999 14.0302ZM19.4999 8.7602C18.6299 8.7602 17.9199 9.4702 17.9199 10.3402C17.9199 11.2102 18.6299 11.9202 19.4999 11.9202C20.3699 11.9202 21.0799 11.2102 21.0799 10.3402C21.0799 9.4702 20.3699 8.7602 19.4999 8.7602Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">Backed by Real Land</p>
+                                                                <p>  Each NFT is tied to real land</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M23 11.1962V10.5C23 7.365 18.2712 5 12 5C5.72875 5 1 7.365 1 10.5V15.5C1 18.1112 4.28125 20.1863 9 20.8075V21.5C9 24.635 13.7288 27 20 27C26.2712 27 31 24.635 31 21.5V16.5C31 13.9125 27.8225 11.835 23 11.1962ZM29 16.5C29 18.1525 25.1512 20 20 20C19.5337 20 19.0712 19.9838 18.615 19.9538C21.3112 18.9713 23 17.375 23 15.5V13.2175C26.7338 13.7737 29 15.2838 29 16.5ZM9 18.7812V15.8075C9.99472 15.9371 10.9969 16.0014 12 16C13.0031 16.0014 14.0053 15.9371 15 15.8075V18.7812C14.0068 18.928 13.004 19.0011 12 19C10.996 19.0011 9.99324 18.928 9 18.7812ZM21 13.7413V15.5C21 16.5488 19.4488 17.675 17 18.3587V15.4375C18.6137 15.0462 19.98 14.4638 21 13.7413ZM12 7C17.1512 7 21 8.8475 21 10.5C21 12.1525 17.1512 14 12 14C6.84875 14 3 12.1525 3 10.5C3 8.8475 6.84875 7 12 7ZM3 15.5V13.7413C4.02 14.4638 5.38625 15.0462 7 15.4375V18.3587C4.55125 17.675 3 16.5488 3 15.5ZM11 21.5V20.9788C11.3288 20.9913 11.6612 21 12 21C12.485 21 12.9587 20.9837 13.4237 20.9562C13.9403 21.1412 14.4665 21.2981 15 21.4263V24.3587C12.5512 23.675 11 22.5488 11 21.5ZM17 24.7812V21.8C17.9944 21.9337 18.9967 22.0005 20 22C21.0031 22.0014 22.0053 21.9371 23 21.8075V24.7812C21.0106 25.0729 18.9894 25.0729 17 24.7812ZM25 24.3587V21.4375C26.6137 21.0462 27.98 20.4637 29 19.7412V21.5C29 22.5488 27.4488 23.675 25 24.3587Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">$BTG Rewards</p>
+                                                                <p>Earn $BTG via Vesting</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
+                                                            <div className="ecommerce-assurance">
+                                                                <p className="mb-4 !inline-flex">
+
+
+                                                                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <path d="M30.9536 5.98633C30.9393 5.74168 30.8357 5.5108 30.6624 5.33752C30.4891 5.16424 30.2583 5.06061 30.0136 5.04633C23.5436 4.67133 18.3486 6.63883 16.1161 10.3238C14.6411 12.7601 14.6436 15.7188 16.0961 18.5413C15.2694 19.5255 14.6652 20.6768 14.3249 21.9163L12.2911 19.8751C13.2686 17.8338 13.2311 15.7063 12.1661 13.9388C10.5161 11.2151 6.70737 9.75508 1.97862 10.0326C1.73398 10.0469 1.5031 10.1505 1.32982 10.3238C1.15653 10.4971 1.05291 10.7279 1.03862 10.9726C0.759874 15.7013 2.22112 19.5101 4.94487 21.1601C5.84371 21.7092 6.87656 21.9999 7.92987 22.0001C8.95225 21.9875 9.95872 21.7453 10.8749 21.2913L13.9999 24.4163V28.0001C13.9999 28.2653 14.1052 28.5196 14.2928 28.7072C14.4803 28.8947 14.7347 29.0001 14.9999 29.0001C15.2651 29.0001 15.5194 28.8947 15.707 28.7072C15.8945 28.5196 15.9999 28.2653 15.9999 28.0001V24.3138C15.9954 22.7229 16.5368 21.1787 17.5336 19.9388C18.8198 20.611 20.2463 20.9707 21.6974 20.9888C23.1003 20.9934 24.4773 20.6101 25.6761 19.8813C29.3611 17.6513 31.3336 12.4563 30.9536 5.98633ZM5.97612 19.4501C4.05862 18.2888 2.97362 15.5401 2.99987 12.0001C6.53987 11.9701 9.28862 13.0588 10.4499 14.9763C11.0561 15.9763 11.1549 17.1426 10.7574 18.3438L7.70612 15.2926C7.51706 15.113 7.26531 15.0143 7.00455 15.0176C6.74379 15.021 6.49465 15.126 6.31025 15.3104C6.12584 15.4948 6.02077 15.744 6.01744 16.0048C6.0141 16.2655 6.11275 16.5173 6.29237 16.7063L9.34362 19.7576C8.14237 20.1551 6.97738 20.0563 5.97612 19.4501ZM24.6399 18.1726C22.9649 19.1863 20.9961 19.2638 18.9961 18.4226L25.7074 11.7101C25.887 11.521 25.9857 11.2693 25.9823 11.0085C25.979 10.7477 25.8739 10.4986 25.6895 10.3142C25.5051 10.1298 25.256 10.0247 24.9952 10.0214C24.7344 10.018 24.4827 10.1167 24.2936 10.2963L17.5811 17.0001C16.7361 15.0001 16.8124 13.0301 17.8311 11.3563C19.5736 8.48133 23.7061 6.87883 28.9974 7.00258C29.1174 12.2926 27.5174 16.4301 24.6399 18.1726Z" fill="rgb(var(--primary))" />
+                                                                    </svg>
+
+                                                                </p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">NFT staking</p>
+                                                                <p>Earn TCO₂ starting in 2026</p>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[0.8rem] text-[#8C9097] mb-2">NFT Details :</p>
+                                                    <div className="table-responsive">
+                                                        <table className="table table-bordered whitespace-nowrap min-w-full">
+                                                            <tbody>
+                                                                <tr><th className="font-semibold text-start">Type</th><td>ERC-721</td></tr>
+                                                                <tr><th className="font-semibold text-start">Rarity</th><td>Legendary</td></tr>
+                                                                <tr><th className="font-semibold text-start">Legendary Supply</th><td>40 NFTs</td></tr>
+                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>1000 m² (each NFT corresponds to a real land plot)</td></tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                    </div>
+
+
+
+
+                <PurchaseCelebrationModal
+                    isOpen={isModalOpen}
+                    onClose={() => {
+                        setModalOpen(false);
+                        setModalData({
+                            id: "",
+                            image: "",
+                            name: "",
+                            tier: "Standard"
+                        });
+                    }}
+                    name={modalData.name}
+                    token="0xe2d29582718057c9e3f69400ea0d2bb415908370"
+                    id={modalData.id}
+                    image={modalData.image}
+                    tier={modalData.tier}
+                />
+                <PurchaseFailedModal
+                    isOpen={isFailureModalOpen}
+                    onClose={() => {
+                        setFailureModalOpen(false);
+                        setActiveOrder(true);
+                    }}
+                    image={failureImage}
+                    activeOrder={activeOrder}
+                />
+                <MintCelebrationModal
+                    isOpen={isStandardMintModalOpen}
+                    onClose={() => {
+                        setIsStandardMintModalOpen(false);
+                        setModalData({ id: "", image: "", name: "", tier: "Standard" });
+                    }}
+                    name={modalData.name}
+                    token="0xe2d29582718057c9e3f69400ea0d2bb415908370"
+                    id={modalData.id}
+                    image={modalData.image}
+                    tier={modalData.tier}
+                />
+
+                {/* Pending Purchase Toast */}
+                {pendingPurchase && (
+                    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 md:left-auto md:right-6 md:translate-x-0">
+                        <div
+                            role="alert"
+                            className="bg-camel shadow-lg rounded-md w-full max-w-md min-w-[320px] px-5 py-4"
+                        >
+                            <div className="flex items-center justify-between w-full">
+                                {/* NFT Icon */}
+                                <div className="flex-shrink-0">
+                                    <img
+                                        src={pendingNftImage}
+                                        alt="NFT"
+                                        width={30}
+                                        height={30}
+                                        className="rounded"
+                                    />
+                                </div>
+
+                                {/* Text */}
+                                <div className="flex-1 text-center">
+                                    <strong className="text-sm font-bold">Purchase pending</strong>
+                                </div>
+
+                                {/* Loader */}
+                                <div className="flex-shrink-0">
+                                    <div className="animate-spin rounded-full h-6 w-6 border-2 border-secondary border-t-transparent"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Error Toast */}
+                {showToast && toastMessage && (
+                    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 md:left-auto md:right-6 md:translate-x-0">
+                        <div
+                            role="alert"
+                            className="bg-bgW shadow-lg rounded-md w-full max-w-md min-w-[320px] px-5 py-4 text-redW"
+                        >
+                            <div className="flex items-center gap-3">
+                                {/* Left custom icon - vertically centered */}
+                                <div className="flex-shrink-0">
+                                    <img
+                                        src="/assets/images/svg/errorIcon.svg"
+                                        alt="Warning"
+                                        width={25}
+                                        height={25}
+                                        className="mt-0.5"
+                                    />
+                                </div>
+
+                                {/* Text content and Close */}
+                                <div className="flex justify-between items-start flex-1">
+                                    {/* Title + Description */}
+                                    <div className="flex flex-col">
+                                        <strong className="text-sm font-bold">{toastTitle}</strong>
+                                        <p className="text-xs">{toastMessage}</p>
+                                    </div>
+
+                                    {/* Close button */}
+                                    <button
+                                        onClick={() => setShowToast(false)}
+                                        className="text-redW hover:text-red-400 transition-colors duration-200 ml-4 mt-0.5"
+                                        aria-label="Close"
+                                    >
+                                        <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M1 1L15 15M15 1L1 15" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                </div>
+            </div>
+        </Fragment>
+    );
+
+};
+
+export default Nftdetails;
