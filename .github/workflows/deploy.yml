@@ -14,12 +14,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: yarn
+        node-version: 22
+        cache: yarn
 
       - run: yarn install --frozen-lockfile
         env:
           YARN_NETWORK_TIMEOUT: "600000"
+
+      - run: yarn opennextjs-cloudflare build
 
       - run: yarn opennextjs-cloudflare deploy --config wrangler.json
         env:
