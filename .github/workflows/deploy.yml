@@ -24,6 +24,12 @@ jobs:
         env:
           YARN_NETWORK_TIMEOUT: "600000"
 
+      - name: Create .env from secret
+        run: |
+          cat << 'EOF' > .env
+          ${{ secrets.ENV_FILE }}
+          EOF
+
       - name: Build OpenNext bundle
         run: |
           set -a
