@@ -1466,7 +1466,7 @@ const StakingNFT = () => {
                         <div className="w-full flex-grow">
                             <p className="text-4xl font-bold mb-1">Earn BCO2</p>
                             <p className='dark:text-white/60 mb-4'>
-                                Stake your tokenized land plots (NFTs) to earn BCO2 rewards.<br />
+                                Stake your tokenized land plots to earn BCO2 rewards.<br />
                                 The more NFTs you stake, the higher your earnings potential.
                             </p>
                         </div>
