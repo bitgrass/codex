@@ -14,6 +14,7 @@ import {
   SEADROP_CONDUIT_INFO,
   SeaDropABIData,
 } from "@/shared/data/tokens/data";
+import { IconBoxPadding } from "@/public/assets/iconfonts/tabler-icons/icons-react";
 
 type ChatStatus = "pending" | "success" | "error";
 
@@ -34,6 +35,14 @@ type ChatMessage = {
 };
 
 const BASE_CHAIN_ID = 8453;
+const QUICK_PROMPTS = [
+  "Check my wallet Balance",
+  "Swap 0.0001 ETH to USDC",
+  "Send 0.0001 ETH to 0x...",
+  "What is Carbon Credit?",
+  "Check my NFTs",
+  "Buy Standard 100m2 plot",
+];
 
 const ETH_TOKEN: Token = {
   name: "ETH",
@@ -55,33 +64,33 @@ const USDC_TOKEN: Token = {
 
 type ParsedIntent =
   | {
-      type: "swap";
-      amount: string;
-      fromSymbol: "ETH";
-      toSymbol: "USDC";
-      chainId: 8453;
-    }
+    type: "swap";
+    amount: string;
+    fromSymbol: "ETH";
+    toSymbol: "USDC";
+    chainId: 8453;
+  }
   | {
-      type: "transfer";
-      amount: string;
-      symbol: "ETH" | "USDC";
-      toAddress: `0x${string}`;
-      chainId: 8453;
-    }
+    type: "transfer";
+    amount: string;
+    symbol: "ETH" | "USDC";
+    toAddress: `0x${string}`;
+    chainId: 8453;
+  }
   | {
-      type: "balance";
-      chainId: 8453;
-    }
+    type: "balance";
+    chainId: 8453;
+  }
   | {
-      type: "nfts";
-      chainId: 8453;
-    }
+    type: "nfts";
+    chainId: 8453;
+  }
   | {
-      type: "buy_plot";
-      tier: "Standard" | "Premium" | "Legendary";
-      size: "100" | "500" | "1000";
-      chainId: 8453;
-    }
+    type: "buy_plot";
+    tier: "Standard" | "Premium" | "Legendary";
+    size: "100" | "500" | "1000";
+    chainId: 8453;
+  }
   | { type: "unknown"; reason?: string };
 
 type AgentResponse = {
@@ -537,32 +546,34 @@ async function buildPremiumLegendaryTx(params: {
 const ClimateAgentPage = () => {
   const {
     address,
-    shortAddress,
     client: walletClient,
     clientReady,
     clientError,
-    isLoading,
-    hasExternalWallet,
-    hasEmbeddedWallet,
-    isUsingExternalWallet,
     needsExternalWalletReconnection,
   } = useConnectedAddress();
 
   const [input, setInput] = useState("");
   const [isWorking, setIsWorking] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [lastVoicePhrase, setLastVoicePhrase] = useState("");
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const [speechSupported, setSpeechSupported] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "welcome",
       role: "assistant",
       content:
-        "Tell me what to do. I can swap ETH to USDC on Base. Example: Swap 0.0001 ETH to USDC. " +
-        "I can also transfer ETH or USDC. Example: Send 0.0001 ETH to 0x... " +
-        "I can also buy tokenized plots (Standard 100m², Premium 500m², Legendary 1000m²).",
+        "How we can start?",
     },
   ]);
 
   const messageIdRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const inputBaseRef = useRef("");
+  const finalTranscriptRef = useRef("");
+  const suppressVoiceSubmitRef = useRef(false);
 
   const nextMessageId = () =>
     `msg-${Date.now()}-${messageIdRef.current++}`;
@@ -584,6 +595,20 @@ const ClimateAgentPage = () => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const supported = Boolean(
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    );
+    setSpeechSupported(supported);
+
+    return () => {
+      if (recognitionRef.current?.stop) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
   const interpret = async (text: string): Promise<AgentResponse> => {
     const res = await fetch("/api/agent/chat", {
@@ -625,8 +650,8 @@ const ClimateAgentPage = () => {
         legacy.type === "swap"
           ? "Got it — preparing that swap now."
           : legacy.type === "transfer"
-          ? "Got it — preparing that transfer now."
-          : "I can help with swaps (ETH -> USDC) or transfers (ETH/USDC) on Base. " +
+            ? "Got it — preparing that transfer now."
+            : "I can help with swaps (ETH -> USDC) or transfers (ETH/USDC) on Base. " +
             "Try: Swap 0.0001 ETH to USDC or Send 0.0001 ETH to 0x...";
       return { reply, intent: legacy };
     }
@@ -688,7 +713,8 @@ const ClimateAgentPage = () => {
       })) as string;
 
       return Number.parseInt(afterHex, 16) === BASE_CHAIN_ID;
-    } catch { return false;
+    } catch {
+      return false;
       // If switching isn't supported, the swap may still fail—surface a better error later.
     }
   };
@@ -740,10 +766,18 @@ const ClimateAgentPage = () => {
     })) as string;
   };
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const trimmed = input.trim();
+  const stopListening = (suppressSubmit = false) => {
+    suppressVoiceSubmitRef.current = suppressSubmit;
+    if (recognitionRef.current?.stop) {
+      recognitionRef.current.stop();
+    }
+  };
+
+  const submitMessage = async (rawInput: string) => {
+    const trimmed = rawInput.trim();
     if (!trimmed || isWorking) return;
+
+    if (isListening) stopListening(true);
 
     setInput("");
     addMessage({ role: "user", content: trimmed });
@@ -879,10 +913,10 @@ const ClimateAgentPage = () => {
           const image =
             normalizeIpfsUrl(
               nft.normalized_metadata?.image ||
-                nft.normalized_metadata?.image_url ||
-                nft.normalized_metadata?.imageUrl ||
-                nft.metadata?.image ||
-                nft.image,
+              nft.normalized_metadata?.image_url ||
+              nft.normalized_metadata?.imageUrl ||
+              nft.metadata?.image ||
+              nft.image,
             ) || null;
           const collectionName = nft.name || nft.normalized_metadata?.collectionName || null;
           return {
@@ -1087,117 +1121,167 @@ const ClimateAgentPage = () => {
     }
   };
 
+  const startListening = () => {
+    if (isListening) return;
+    if (typeof window === "undefined") return;
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
+      setSpeechError("Voice input is not supported in this browser.");
+      return;
+    }
+
+    setSpeechError(null);
+    suppressVoiceSubmitRef.current = false;
+    inputBaseRef.current = input;
+    finalTranscriptRef.current = "";
+    setLiveTranscript("");
+    setLastVoicePhrase("");
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      let finalChunk = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0]?.transcript ?? "";
+        if (event.results[i].isFinal) {
+          finalChunk += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+
+      if (finalChunk) {
+        finalTranscriptRef.current = `${finalTranscriptRef.current} ${finalChunk}`.trim();
+      }
+
+      const combined = [inputBaseRef.current, finalTranscriptRef.current, interim]
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      setInput(combined);
+      setLiveTranscript(interim.trim());
+    };
+
+    recognition.onerror = (event: any) => {
+      setSpeechError(event?.error ? `Voice error: ${event.error}` : "Voice input error.");
+      setIsListening(false);
+      setLiveTranscript("");
+      recognitionRef.current = null;
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setLiveTranscript("");
+      recognitionRef.current = null;
+      if (suppressVoiceSubmitRef.current) {
+        suppressVoiceSubmitRef.current = false;
+        return;
+      }
+      const finalText = [inputBaseRef.current, finalTranscriptRef.current]
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (finalText) {
+        setLastVoicePhrase(finalText);
+        submitMessage(finalText);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  };
+
+  const handleMicClick = () => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await submitMessage(input);
+  };
+
   return (
     <Fragment>
       <Seo title={"Climate Agent"} />
-      <div className="container">
-        <div className="grid grid-cols-12 gap-x-6 mt-6">
-          <div className="xl:col-span-4 col-span-12">
-            <div className="box">
-              <div className="box-header">
-                <div className="box-title">Agent Status</div>
-              </div>
-              <div className="box-body space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-defaulttextcolor/70">Wallet</span>
-                  <span className="text-sm font-medium">
-                    {isLoading ? "Loading..." : shortAddress || "Not connected"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-defaulttextcolor/70">Mode</span>
-                  <span className="text-sm font-medium">
-                    {isUsingExternalWallet
-                      ? "External wallet"
-                      : hasEmbeddedWallet
-                      ? "Embedded wallet"
-                      : hasExternalWallet
-                      ? "External wallet"
-                      : "None"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-defaulttextcolor/70">Network</span>
-                  <span className="text-sm font-medium">Base (8453)</span>
-                </div>
-                {needsExternalWalletReconnection && (
-                  <div className="alert alert-warning" role="alert">
-                    External wallet needs reconnection for signing.
+      <div className="container climate-agent">
+        <div className="mt-6 flex justify-center">
+          <div className="w-full max-w-4xl">
+              <div className="" style={{padding : 0}}>
+                <div className="box-body flex flex-col items-center text-center">
+                  <div className="agent-face" aria-hidden="true">
+                    <span className="agent-pixel" />
+                    <span className="agent-pixel" />
+                    <span className="agent-pixel" />
                   </div>
-                )}
-                {clientError && (
-                  <div className="alert alert-danger" role="alert">
-                    {clientError}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="box">
-              <div className="box-header">
-                <div className="box-title">Quick Prompts</div>
-              </div>
-              <div className="box-body flex flex-col gap-2">
-                {[
-                  "Swap 0.0001 ETH to USDC",
-                  "Swap 0.001 ETH to USDC",
-                  "Send 0.0001 ETH to 0x...",
-                  "Transfer 1 USDC to 0x...",
-                  "Check my wallet balance",
-                  "Check my NFTs",
-                  "Buy Standard 100m² plot",
-                  "Buy Premium 500m² plot",
-                  "Buy Legendary 1000m² plot",
-                ].map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    onClick={() => setInput(prompt)}
-                    className="w-full px-3 py-2 rounded-md bg-camel10 text-sm text-left hover:bg-camel transition"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="box">
-              <div className="box-header">
-                <div className="box-title">How It Works</div>
-              </div>
-              <div className="box-body space-y-2 text-sm text-defaulttextcolor/70">
-                <div>
-                  Swaps execute on the connected wallet. External wallets will
-                  prompt for confirmation.
+                <div className="mt-4">
+                  <div className="text-3xl dark:text-white font-semibold">Climate Agent</div>
+                  <div className="text-sm text-defaulttextcolor/70">Your eco-agent</div>
                 </div>
-                <div>
-                  Supported requests: swap ETH to USDC, transfer ETH/USDC, check balances/NFTs, or buy tokenized plots.
-                </div>
-              </div>
-            </div>
-          </div>
 
-          <div className="xl:col-span-8 col-span-12">
-            <div className="box h-full flex flex-col">
-              <div className="box-header">
-                <div className="box-title">Climate Agent Chat</div>
+                <div className="mt-4 flex flex-col items-center gap-3">
+                  {needsExternalWalletReconnection && (
+                    <div className="text-[11px] text-amber-500">
+                      External wallet needs reconnection for signing.
+                    </div>
+                  )}
+                  {clientError && (
+                    <div className="text-[11px] text-red-500">{clientError}</div>
+                  )}
+                </div>
+
+                <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-sm text-defaulttextcolor/70">
+                  {QUICK_PROMPTS.map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      onClick={() => setInput(prompt)}
+                      className="px-4 py-2 rounded-full bg-camel10 dark:bg-bodybg text-sm font-medium text-defaulttextcolor/70 hover:text-defaulttextcolor hover:bg-camel transition"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
               </div>
+            </div>
+
+            <div className="box mt-6 flex flex-col">
               <div className="box-body flex flex-col gap-4">
                 <div
                   className="flex flex-col gap-3 overflow-y-auto"
-                  style={{ minHeight: "360px", maxHeight: "460px" }}
+                  style={{ minHeight: "300px", maxHeight: "340px" }}
                 >
                   {messages.map((message) => {
                     const isUser = message.role === "user";
                     return (
                       <div
                         key={message.id}
-                        className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                        className={`flex ${isUser ? "justify-end" : "justify-start"} items-start gap-2`}
                       >
+                        {!isUser && (
+                          <div className="mt-1 text-secondary">
+                            <i className="bx bx-bot text-xl"></i>
+                          </div>
+                        )}
                         <div
-                          className={`max-w-[80%] rounded-xl px-4 py-3 text-sm shadow-sm ${
-                            isUser
+                          className={`max-w-[80%] rounded-xl px-4 py-3 text-sm shadow-sm ${isUser
                               ? "bg-secondary text-white"
                               : "bg-camel10 text-defaulttextcolor"
-                          }`}
+                            }`}
                         >
                           <div>{message.content}</div>
                           {message.status === "pending" && (
@@ -1281,6 +1365,23 @@ const ClimateAgentPage = () => {
                     className="flex-1 px-3 py-2 rounded-md bg-swap text-sm dark:text-white dark:placeholder:text-white focus:outline-none focus:ring-2 focus:ring-secondary"
                   />
                   <button
+                    type="button"
+                    onClick={handleMicClick}
+                    disabled={!speechSupported || isWorking}
+                    className="px-4 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
+                    aria-pressed={isListening}
+                    aria-label={isListening ? "Stop voice input" : "Start voice input"}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5 mx-auto"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3zm5 9a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z" />
+                    </svg>
+                  </button>
+                  <button
                     type="submit"
                     disabled={isWorking}
                     className="px-4 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
@@ -1288,6 +1389,19 @@ const ClimateAgentPage = () => {
                     {isWorking ? "Working..." : "Send"}
                   </button>
                 </form>
+                {(isListening || liveTranscript || lastVoicePhrase || speechError) && (
+                  <div className="mt-2 text-xs text-defaulttextcolor/70">
+                    {isListening && (
+                      <div>
+                        Listening... {liveTranscript ? `"${liveTranscript}"` : "Speak now."}
+                      </div>
+                    )}
+                    {!isListening && lastVoicePhrase && (
+                      <div>Last phrase: "{lastVoicePhrase}"</div>
+                    )}
+                    {speechError && <div className="text-red-500">{speechError}</div>}
+                  </div>
+                )}
               </div>
             </div>
           </div>

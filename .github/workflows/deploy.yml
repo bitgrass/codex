@@ -1,41 +1,41 @@
-# name: Deploy (OpenNext -> Cloudflare)
-#
-# on:
-#   push:
-#     branches: ["staking"]
-#   workflow_dispatch:
-#
-# jobs:
-#   deploy:
-#     runs-on: ubuntu-latest
-#     environment: codex-dep
-#
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
-#
-#       - name: Setup Node
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: 22
-#           cache: yarn
-#
-#       - name: Install
-#         run: yarn install --frozen-lockfile
-#         env:
-#           YARN_NETWORK_TIMEOUT: "600000"
-#
-#       - name: Create .env from secret
-#         run: |
-#           cat << 'EOF' > .env
-#           ${{ secrets.ENV_FILE }}
-#           EOF
-#
-#       - name: Build OpenNext bundle
-#         run: yarn opennextjs-cloudflare build
-#
-#       - name: Deploy to Cloudflare
-#         run: yarn opennextjs-cloudflare deploy --config wrangler.jsonc
-#         env:
-#           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-#           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+name: Deploy (OpenNext -> Cloudflare)
+
+on:
+  push:
+    branches: ["climate-agent"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: codex-dep
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Install
+        run: yarn install --frozen-lockfile
+        env:
+          YARN_NETWORK_TIMEOUT: "600000"
+
+      - name: Create .env from secret
+        run: |
+          cat << 'EOF' > .env
+          ${{ secrets.ENV_FILE }}
+          EOF
+
+      - name: Build OpenNext bundle
+        run: yarn opennextjs-cloudflare build
+
+      - name: Deploy to Cloudflare
+        run: yarn opennextjs-cloudflare deploy --config wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
