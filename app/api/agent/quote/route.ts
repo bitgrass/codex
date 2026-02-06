@@ -1,29 +1,11 @@
-import { getSwapQuote } from "@coinbase/onchainkit/api";
-import { setOnchainKitConfig } from "@coinbase/onchainkit";
-import type { Token } from "@coinbase/onchainkit/token";
 import { base } from "viem/chains";
+import { parseUnits } from "viem";
 import { z } from "zod";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const ETH_TOKEN: Token = {
-  name: "ETH",
-  address: "",
-  symbol: "ETH",
-  decimals: 18,
-  image: null,
-  chainId: base.id,
-};
-
-const USDC_TOKEN: Token = {
-  name: "USDC",
-  address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  symbol: "USDC",
-  decimals: 6,
-  image: null,
-  chainId: base.id,
-};
+const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
 const RequestSchema = z.object({
   amount: z.string().min(1).max(64),
@@ -47,17 +29,49 @@ export async function POST(request: Request) {
     );
   }
 
-  // Allow OnchainKit API utilities outside of React context.
-  setOnchainKitConfig({ apiKey, chain: base });
+  let amountInWei: string;
+  try {
+    amountInWei = parseUnits(parsed.data.amount, 18).toString();
+  } catch {
+    return Response.json({ error: "Invalid amount format." }, { status: 400 });
+  }
 
-  const quote = await getSwapQuote({
-    amount: parsed.data.amount,
-    amountReference: "from",
-    from: ETH_TOKEN,
-    to: USDC_TOKEN,
-    maxSlippage: "3",
-    useAggregator: false,
+  const rpcUrl = `https://api.developer.coinbase.com/rpc/v1/${base.name
+    .replace(" ", "-")
+    .toLowerCase()}/${apiKey}`;
+
+  const body = {
+    id: 1,
+    jsonrpc: "2.0",
+    method: "cdp_getSwapQuote",
+    params: [
+      {
+        from: "ETH",
+        to: USDC_ADDRESS,
+        amount: amountInWei,
+        amountReference: "from",
+        slippagePercentage: "0.5",
+        v2Enabled: true,
+      },
+    ],
+  };
+
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 
-  return Response.json(quote);
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data || data.error) {
+    return Response.json(
+      {
+        error: data?.error?.message || "Swap quote request failed.",
+        details: data?.error ?? null,
+      },
+      { status: 500 },
+    );
+  }
+
+  return Response.json(data.result ?? data);
 }
