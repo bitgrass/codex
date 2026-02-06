@@ -2,7 +2,7 @@ import { base } from "viem/chains";
 import { parseUnits } from "viem";
 import { z } from "zod";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
