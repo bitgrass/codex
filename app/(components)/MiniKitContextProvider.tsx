@@ -79,6 +79,7 @@ function OnchainProviders({ children }: Props) {
             'coinbase_wallet',
             'metamask',
             'phantom',
+            'base_account',
           ],
         },
         loginMethods: [

@@ -6,7 +6,9 @@
     "wagmi": "^2.15.6",
     "@wagmi/core": "^2.15.6",
     "@wagmi/connectors": "^5.8.5",
-    "viem": "^2.10.0"
+    "viem": "^2.10.0",
+    "@solana/kit": "^5.0.0",
+    "@solana/transaction-confirmation": "^5.0.0"
   },
   "scripts": {
     "dev": "next dev",
@@ -23,6 +25,10 @@
   },
   "dependencies": {
     "@coinbase/onchainkit": "^0.38.14",
+    "@coinbase/agentkit": "latest",
+    "@coinbase/agentkit-vercel-ai-sdk": "latest",
+    "@ai-sdk/openai": "latest",
+    "ai": "latest",
     "@coinbase/payments-mcp": "^1.0.5",
     "@emotion/styled": "^11.11.5",
     "@farcaster/miniapp-sdk": "^0.1.6",
