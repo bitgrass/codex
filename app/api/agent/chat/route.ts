@@ -15,8 +15,8 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("swap"),
     amount: z.string().min(1),
-    fromSymbol: z.literal("ETH"),
-    toSymbol: z.literal("USDC"),
+    fromSymbol: z.enum(["ETH", "USDC"]),
+    toSymbol: z.enum(["ETH", "USDC"]),
     chainId: z.literal(8453),
   }),
   z.object({
@@ -49,7 +49,7 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
 function parseSwapRegex(message: string) {
   const normalized = message.trim().toLowerCase();
   const match = normalized.match(
-    /swap\s+([\d.]+)\s*(eth|weth)\s*(to|for|->)\s*([a-z0-9]+)/i,
+    /swap\s+([\d.]+)\s*(eth|weth|usdc)\s*(to|for|->)\s*([a-z0-9]+)/i,
   );
 
   if (!match) {
@@ -57,21 +57,31 @@ function parseSwapRegex(message: string) {
   }
 
   const amount = match[1];
+  const fromSymbol = match[2]?.toUpperCase();
   const buySymbol = match[4]?.toUpperCase();
 
   if (!amount || Number.isNaN(Number(amount)) || Number(amount) <= 0) {
     return { type: "unknown" as const, reason: "Invalid amount." };
   }
 
-  if (buySymbol !== "USDC") {
-    return { type: "unknown" as const, reason: "Only USDC is supported." };
+  const normalizedFrom = fromSymbol === "WETH" ? "ETH" : fromSymbol;
+  if (!normalizedFrom || (normalizedFrom !== "ETH" && normalizedFrom !== "USDC")) {
+    return { type: "unknown" as const, reason: "Only ETH or USDC are supported." };
+  }
+
+  if (buySymbol !== "USDC" && buySymbol !== "ETH") {
+    return { type: "unknown" as const, reason: "Only ETH or USDC are supported." };
+  }
+
+  if (normalizedFrom === buySymbol) {
+    return { type: "unknown" as const, reason: "Swap tokens must be different." };
   }
 
   return {
     type: "swap" as const,
     amount,
-    fromSymbol: "ETH" as const,
-    toSymbol: "USDC" as const,
+    fromSymbol: normalizedFrom as "ETH" | "USDC",
+    toSymbol: buySymbol as "ETH" | "USDC",
     chainId: 8453 as const,
   };
 }
@@ -222,7 +232,7 @@ function fallbackResponse(message: string) {
 
   return {
     reply:
-      "I can help with swaps (ETH -> USDC), transfers (ETH/USDC), balances, NFTs, " +
+      "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
       "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²). " +
       "Try: Buy a Standard 100m² plot.",
     intent: { type: "unknown" as const },
@@ -261,7 +271,7 @@ export async function POST(request: Request) {
         "You are a helpful onchain assistant. " +
         "Be concise, friendly, and accurate. " +
         "You can answer general crypto questions too. " +
-        "You CAN initiate swaps (ETH -> USDC) and transfers (ETH/USDC) on Base via the user's connected wallet, " +
+        "You CAN initiate swaps (ETH <-> USDC) and transfers (ETH/USDC) on Base via the user's connected wallet, " +
         "but the user must approve the transaction in their wallet. " +
         "You CAN check balances and NFTs when a wallet is connected. " +
         "You CAN help buy tokenized plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base. " +

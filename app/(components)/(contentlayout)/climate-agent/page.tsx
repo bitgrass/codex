@@ -66,8 +66,8 @@ type ParsedIntent =
   | {
     type: "swap";
     amount: string;
-    fromSymbol: "ETH";
-    toSymbol: "USDC";
+    fromSymbol: "ETH" | "USDC";
+    toSymbol: "ETH" | "USDC";
     chainId: 8453;
   }
   | {
@@ -574,6 +574,7 @@ const ClimateAgentPage = () => {
   const inputBaseRef = useRef("");
   const finalTranscriptRef = useRef("");
   const suppressVoiceSubmitRef = useRef(false);
+  const lastTranscriptRef = useRef("");
 
   const nextMessageId = () =>
     `msg-${Date.now()}-${messageIdRef.current++}`;
@@ -624,7 +625,7 @@ const ClimateAgentPage = () => {
     if (!res.ok) {
       return {
         reply:
-          "I can help with swaps (ETH -> USDC), transfers (ETH/USDC), balances, NFTs, " +
+          "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
           "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base.",
         intent: { type: "unknown", reason: "Agent service error." },
       };
@@ -637,7 +638,7 @@ const ClimateAgentPage = () => {
     if (!json || typeof json !== "object") {
       return {
         reply:
-          "I can help with swaps (ETH -> USDC), transfers (ETH/USDC), balances, NFTs, " +
+          "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
           "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base.",
         intent: { type: "unknown", reason: "Could not understand your request." },
       };
@@ -651,7 +652,7 @@ const ClimateAgentPage = () => {
           ? "Got it — preparing that swap now."
           : legacy.type === "transfer"
             ? "Got it — preparing that transfer now."
-            : "I can help with swaps (ETH -> USDC) or transfers (ETH/USDC) on Base. " +
+            : "I can help with swaps (ETH <-> USDC) or transfers (ETH/USDC) on Base. " +
             "Try: Swap 0.0001 ETH to USDC or Send 0.0001 ETH to 0x...";
       return { reply, intent: legacy };
     }
@@ -659,7 +660,7 @@ const ClimateAgentPage = () => {
     if (!("intent" in json)) {
       return {
         reply:
-          "I can help with swaps (ETH -> USDC), transfers (ETH/USDC), balances, NFTs, " +
+          "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
           "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base.",
         intent: { type: "unknown", reason: "Could not understand your request." },
       };
@@ -773,11 +774,11 @@ const ClimateAgentPage = () => {
     }
   };
 
-  const submitMessage = async (rawInput: string) => {
+  const submitMessage = async (rawInput: string, options?: { skipStop?: boolean }) => {
     const trimmed = rawInput.trim();
     if (!trimmed || isWorking) return;
 
-    if (isListening) stopListening(true);
+    if (isListening && !options?.skipStop) stopListening(true);
 
     setInput("");
     addMessage({ role: "user", content: trimmed });
@@ -1001,11 +1002,14 @@ const ClimateAgentPage = () => {
           status: "pending",
         });
 
+        const fromToken = intent.fromSymbol === "ETH" ? ETH_TOKEN : USDC_TOKEN;
+        const toToken = intent.toSymbol === "ETH" ? ETH_TOKEN : USDC_TOKEN;
+
         const swapTransaction = await buildSwapTransaction({
           amount: intent.amount,
           fromAddress: address as `0x${string}`,
-          from: ETH_TOKEN,
-          to: USDC_TOKEN,
+          from: fromToken,
+          to: toToken,
           maxSlippage: "0.5",
           useAggregator: false,
         });
@@ -1145,28 +1149,37 @@ const ClimateAgentPage = () => {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
+    const isMobile =
+      typeof navigator !== "undefined" &&
+      /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
 
     recognition.onresult = (event: any) => {
       let interim = "";
-      let finalChunk = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      let finalText = "";
+      for (let i = 0; i < event.results.length; i += 1) {
         const transcript = event.results[i][0]?.transcript ?? "";
         if (event.results[i].isFinal) {
-          finalChunk += transcript;
+          finalText += transcript;
         } else {
           interim += transcript;
         }
       }
 
-      if (finalChunk) {
-        finalTranscriptRef.current = `${finalTranscriptRef.current} ${finalChunk}`.trim();
-      }
+      finalTranscriptRef.current = finalText.trim();
 
       const combined = [inputBaseRef.current, finalTranscriptRef.current, interim]
         .filter(Boolean)
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
+
+      if (isMobile && combined === lastTranscriptRef.current) {
+        return;
+      }
+      if (isMobile) {
+        lastTranscriptRef.current = combined;
+      }
+
       setInput(combined);
       setLiveTranscript(interim.trim());
     };
@@ -1182,6 +1195,7 @@ const ClimateAgentPage = () => {
       setIsListening(false);
       setLiveTranscript("");
       recognitionRef.current = null;
+      lastTranscriptRef.current = "";
       if (suppressVoiceSubmitRef.current) {
         suppressVoiceSubmitRef.current = false;
         return;
@@ -1204,7 +1218,11 @@ const ClimateAgentPage = () => {
 
   const handleMicClick = () => {
     if (isListening) {
-      stopListening();
+      const currentText = input.trim();
+      stopListening(true);
+      if (currentText) {
+        void submitMessage(currentText, { skipStop: true });
+      }
     } else {
       startListening();
     }
@@ -1213,6 +1231,12 @@ const ClimateAgentPage = () => {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     await submitMessage(input);
+  };
+
+  const handleQuickPrompt = async (prompt: string) => {
+    if (isWorking) return;
+    setInput(prompt);
+    await submitMessage(prompt);
   };
 
   return (
@@ -1249,7 +1273,7 @@ const ClimateAgentPage = () => {
                     <button
                       key={prompt}
                       type="button"
-                      onClick={() => setInput(prompt)}
+                      onClick={() => void handleQuickPrompt(prompt)}
                       className="px-4 py-2 rounded-full bg-camel10 dark:bg-bodybg text-sm font-medium text-defaulttextcolor/70 hover:text-defaulttextcolor hover:bg-camel transition"
                     >
                       {prompt}
@@ -1357,37 +1381,39 @@ const ClimateAgentPage = () => {
                 </div>
               </div>
               <div className="box-footer border-t dark:border-defaultborder/10">
-                <form onSubmit={handleSubmit} className="flex gap-2">
+                <form onSubmit={handleSubmit} className="flex items-center gap-2 flex-nowrap">
                   <input
                     value={input}
                     onChange={(event) => setInput(event.target.value)}
                     placeholder="Type a command..."
-                    className="flex-1 px-3 py-2 rounded-md bg-swap text-sm dark:text-white dark:placeholder:text-white focus:outline-none focus:ring-2 focus:ring-secondary"
+                    className="flex-1 min-w-0 px-3 py-2 rounded-md bg-swap text-sm dark:text-white dark:placeholder:text-white focus:outline-none focus:ring-2 focus:ring-secondary"
                   />
-                  <button
-                    type="button"
-                    onClick={handleMicClick}
-                    disabled={!speechSupported || isWorking}
-                    className="px-4 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
-                    aria-pressed={isListening}
-                    aria-label={isListening ? "Stop voice input" : "Start voice input"}
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      className="h-5 w-5 mx-auto"
-                      fill="currentColor"
-                      aria-hidden="true"
+                  <div className="flex gap-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleMicClick}
+                      disabled={!speechSupported || isWorking}
+                      className="px-3 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
+                      aria-pressed={isListening}
+                      aria-label={isListening ? "Stop voice input" : "Start voice input"}
                     >
-                      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3zm5 9a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z" />
-                    </svg>
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isWorking}
-                    className="px-4 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
-                  >
-                    {isWorking ? "Working..." : "Send"}
-                  </button>
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-5 w-5"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3zm5 9a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isWorking}
+                      className="px-3 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
+                    >
+                      {isWorking ? "Working..." : "Send"}
+                    </button>
+                  </div>
                 </form>
                 {(isListening || liveTranscript || lastVoicePhrase || speechError) && (
                   <div className="mt-2 text-xs text-defaulttextcolor/70">
