@@ -121,6 +121,12 @@ function safeFormatUnits(value: string, decimals: number) {
   }
 }
 
+function formatAmountForSwap(value: bigint, decimals: number) {
+  const raw = formatUnits(value, decimals);
+  const trimmed = raw.replace(/\.?0+$/, "");
+  return trimmed.length ? trimmed : "0";
+}
+
 function parseTransferLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
   const match = normalized.match(
@@ -575,6 +581,7 @@ const ClimateAgentPage = () => {
   const finalTranscriptRef = useRef("");
   const suppressVoiceSubmitRef = useRef(false);
   const lastTranscriptRef = useRef("");
+  const speechIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const nextMessageId = () =>
     `msg-${Date.now()}-${messageIdRef.current++}`;
@@ -591,6 +598,18 @@ const ClimateAgentPage = () => {
         message.id === id ? { ...message, ...updates } : message
       )
     );
+  };
+
+  const renderMessageHtml = (content: string) => {
+    const escaped = content
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    const withStrong = escaped.replace(
+      /&lt;strong&gt;([\s\S]*?)&lt;\/strong&gt;/g,
+      "<strong>$1</strong>"
+    );
+    return withStrong.replace(/\n/g, "<br />");
   };
 
   useEffect(() => {
@@ -611,12 +630,16 @@ const ClimateAgentPage = () => {
     };
   }, []);
 
-  const interpret = async (text: string): Promise<AgentResponse> => {
+  const interpret = async (
+    text: string,
+    history?: { role: "user" | "assistant"; content: string }[],
+  ): Promise<AgentResponse> => {
     const res = await fetch("/api/agent/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: text,
+        history,
         walletConnected: Boolean(address),
         address: address || undefined,
       }),
@@ -801,6 +824,13 @@ const ClimateAgentPage = () => {
       return;
     }
 
+    const history = [
+      ...messages
+        .filter((message) => message.content && !message.status)
+        .map((message) => ({ role: message.role, content: message.content })),
+      { role: "user" as const, content: trimmed },
+    ].slice(-10);
+
     const statusId = addMessage({
       role: "assistant",
       content: "Thinking...",
@@ -812,7 +842,7 @@ const ClimateAgentPage = () => {
     let actionId: string | null = null;
 
     try {
-      const agent = await interpret(trimmed);
+      const agent = await interpret(trimmed, history);
 
       updateMessage(statusId, {
         content: agent.reply,
@@ -997,8 +1027,48 @@ const ClimateAgentPage = () => {
       }
 
       if (intent.type === "swap") {
+        let swapAmount = intent.amount;
+        if (intent.amount === "all") {
+          if (intent.fromSymbol === "ETH") {
+            const ethBalance = await getEthBalance(walletClient, address as `0x${string}`);
+            if (!ethBalance || ethBalance <= 0n) {
+              updateMessage(actionId, {
+                content: "No ETH balance available to swap.",
+                status: "error",
+              });
+              return;
+            }
+
+            const gasReserve = parseUnits("0.002", 18);
+            if (ethBalance <= gasReserve) {
+              updateMessage(actionId, {
+                content: "Not enough ETH to cover gas after reserving ~0.002 ETH.",
+                status: "error",
+              });
+              return;
+            }
+
+            const swappable = ethBalance - gasReserve;
+            swapAmount = formatAmountForSwap(swappable, 18);
+          } else {
+            const usdcBalance = await getErc20Balance(
+              walletClient,
+              USDC_TOKEN.address as `0x${string}`,
+              address as `0x${string}`,
+            );
+            if (!usdcBalance || usdcBalance <= 0n) {
+              updateMessage(actionId, {
+                content: "No USDC balance available to swap.",
+                status: "error",
+              });
+              return;
+            }
+            swapAmount = formatAmountForSwap(usdcBalance, 6);
+          }
+        }
+
         updateMessage(actionId, {
-          content: `Quoting: ${intent.amount} ${intent.fromSymbol} -> ${intent.toSymbol} on Base...`,
+          content: `Quoting: ${swapAmount} ${intent.fromSymbol} -> ${intent.toSymbol} on Base...`,
           status: "pending",
         });
 
@@ -1006,12 +1076,12 @@ const ClimateAgentPage = () => {
         const toToken = intent.toSymbol === "ETH" ? ETH_TOKEN : USDC_TOKEN;
 
         const swapTransaction = await buildSwapTransaction({
-          amount: intent.amount,
+          amount: swapAmount,
           fromAddress: address as `0x${string}`,
           from: fromToken,
           to: toToken,
           maxSlippage: "0.5",
-          useAggregator: false,
+          useAggregator: intent.fromSymbol === "USDC" || intent.toSymbol === "ETH",
         });
 
         if (isApiError(swapTransaction)) {
@@ -1146,12 +1216,12 @@ const ClimateAgentPage = () => {
     setLastVoicePhrase("");
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
     const isMobile =
       typeof navigator !== "undefined" &&
       /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+    recognition.continuous = !isMobile;
+    recognition.interimResults = !isMobile;
+    recognition.lang = "en-US";
 
     recognition.onresult = (event: any) => {
       let interim = "";
@@ -1180,8 +1250,30 @@ const ClimateAgentPage = () => {
         lastTranscriptRef.current = combined;
       }
 
-      setInput(combined);
-      setLiveTranscript(interim.trim());
+      if (isMobile) {
+        setInput(finalTranscriptRef.current || inputBaseRef.current);
+        setLiveTranscript("");
+      } else {
+        setInput(combined);
+        setLiveTranscript(interim.trim());
+      }
+
+      if (!isMobile) {
+        if (speechIdleTimerRef.current) {
+          clearTimeout(speechIdleTimerRef.current);
+        }
+        speechIdleTimerRef.current = setTimeout(() => {
+          const finalTextNow = [inputBaseRef.current, finalTranscriptRef.current]
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (finalTextNow) {
+            void submitMessage(finalTextNow, { skipStop: true });
+          }
+          stopListening(true);
+        }, 1700);
+      }
     };
 
     recognition.onerror = (event: any) => {
@@ -1196,6 +1288,10 @@ const ClimateAgentPage = () => {
       setLiveTranscript("");
       recognitionRef.current = null;
       lastTranscriptRef.current = "";
+      if (speechIdleTimerRef.current) {
+        clearTimeout(speechIdleTimerRef.current);
+        speechIdleTimerRef.current = null;
+      }
       if (suppressVoiceSubmitRef.current) {
         suppressVoiceSubmitRef.current = false;
         return;
@@ -1307,7 +1403,12 @@ const ClimateAgentPage = () => {
                               : "bg-camel10 text-defaulttextcolor"
                             }`}
                         >
-                          <div>{message.content}</div>
+                          <div
+                            className="leading-relaxed"
+                            dangerouslySetInnerHTML={{
+                              __html: renderMessageHtml(message.content),
+                            }}
+                          />
                           {message.status === "pending" && (
                             <div className="text-xs mt-2 text-defaulttextcolor/70">
                               Processing...

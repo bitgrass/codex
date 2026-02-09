@@ -7,6 +7,15 @@ export const dynamic = "force-dynamic";
 
 const RequestSchema = z.object({
   message: z.string().min(1).max(500),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().min(1).max(1000),
+      }),
+    )
+    .max(10)
+    .optional(),
   walletConnected: z.boolean().optional(),
   address: z.string().optional(),
 });
@@ -48,9 +57,14 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
 
 function parseSwapRegex(message: string) {
   const normalized = message.trim().toLowerCase();
-  const match = normalized.match(
-    /swap\s+([\d.]+)\s*(eth|weth|usdc)\s*(to|for|->)\s*([a-z0-9]+)/i,
+  const maxMatch = normalized.match(
+    /swap\s+(all|max|100%)(?:\s+my)?\s*(eth|weth|usdc)\s*(to|for|->)\s*([a-z0-9]+)/i,
   );
+  const match =
+    maxMatch ||
+    normalized.match(
+      /swap\s+([\d.]+)\s*(eth|weth|usdc)\s*(to|for|->)\s*([a-z0-9]+)/i,
+    );
 
   if (!match) {
     return { type: "unknown" as const, reason: "No swap command detected." };
@@ -60,7 +74,12 @@ function parseSwapRegex(message: string) {
   const fromSymbol = match[2]?.toUpperCase();
   const buySymbol = match[4]?.toUpperCase();
 
-  if (!amount || Number.isNaN(Number(amount)) || Number(amount) <= 0) {
+  if (!amount) {
+    return { type: "unknown" as const, reason: "Invalid amount." };
+  }
+
+  const isAllAmount = amount === "all" || amount === "max" || amount === "100%";
+  if (!isAllAmount && (Number.isNaN(Number(amount)) || Number(amount) <= 0)) {
     return { type: "unknown" as const, reason: "Invalid amount." };
   }
 
@@ -79,7 +98,7 @@ function parseSwapRegex(message: string) {
 
   return {
     type: "swap" as const,
-    amount,
+    amount: isAllAmount ? "all" : amount,
     fromSymbol: normalizedFrom as "ETH" | "USDC",
     toSymbol: buySymbol as "ETH" | "USDC",
     chainId: 8453 as const,
@@ -251,6 +270,7 @@ export async function POST(request: Request) {
   }
 
   const message = parsed.data.message.trim();
+  const history = parsed.data.history ?? [];
   const walletConnected = parsed.data.walletConnected ?? false;
   const address = parsed.data.address ?? "unknown";
 
@@ -265,12 +285,20 @@ export async function POST(request: Request) {
   }
 
   try {
+    const historyText = history
+      .map((entry) => `${entry.role === "user" ? "User" : "Assistant"}: ${entry.content}`)
+      .join("\n");
     const result = await generateText({
-      model: openai("gpt-4o-mini"),
+      model: openai("gpt-5.2"),
       system:
         "You are a helpful onchain assistant. " +
         "Be concise, friendly, and accurate. " +
         "You can answer general crypto questions too. " +
+        "When answering general questions, keep it short (3-5 lines) and use '-' bullets with line breaks. " +
+        "Each bullet must be on its own line, no inline bullets. " +
+        "Use HTML <strong> for bold emphasis (not markdown **). " +
+        "Start with the direct answer; do not add meta lines like 'To start' unless the user asked for next steps. " +
+        "For transaction-related replies, keep it concise and do not use bullets. " +
         "You CAN initiate swaps (ETH <-> USDC) and transfers (ETH/USDC) on Base via the user's connected wallet, " +
         "but the user must approve the transaction in their wallet. " +
         "You CAN check balances and NFTs when a wallet is connected. " +
@@ -278,10 +306,16 @@ export async function POST(request: Request) {
         `Wallet connected: ${walletConnected ? "yes" : "no"}. ` +
         `Connected address: ${address}. ` +
         "Never claim you executed a transaction.",
-      prompt: message,
+      prompt: historyText ? `${historyText}\nUser: ${message}` : message,
     });
 
     let reply = result.text?.trim() || "How can I help?";
+    if (reply.includes(" - ")) {
+      reply = reply.replace(/\s-\s/g, "\n- ");
+    }
+    if (reply.includes("**")) {
+      reply = reply.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    }
 
     const balance = parseBalanceRegex(message);
     if (balance.type !== "unknown") {
