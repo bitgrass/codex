@@ -158,7 +158,7 @@ function parseNftsRegex(message: string) {
     return { type: "unknown" as const, reason: "Buy intent detected." };
   }
   const match = normalized.match(
-    /(nft|nfts|collectibles|my nfts|my nft|check my nfts|check my nft)/i,
+    /(nft|nfts|collectibles|my nfts|my nft|check my nfts|check my nft|landplot|landplots|plot|plots|my plots|my plot|check my plots|check my plot)/i,
   );
 
   if (!match) {

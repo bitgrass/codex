@@ -13,6 +13,7 @@ import {
   SEADROP_ADDRESS_INFO,
   SEADROP_CONDUIT_INFO,
   SeaDropABIData,
+  nftInfo,
 } from "@/shared/data/tokens/data";
 import { IconBoxPadding } from "@/public/assets/iconfonts/tabler-icons/icons-react";
 
@@ -40,7 +41,7 @@ const QUICK_PROMPTS = [
   "Swap 0.0001 ETH to USDC",
   "Send 0.0001 ETH to 0x...",
   "What is Carbon Credit?",
-  "Check my NFTs",
+  "Check my landplots",
   "Buy Standard 100m2 plot",
 ];
 
@@ -164,7 +165,7 @@ function parseNftsLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
   if (/(buy|purchase|get|own|mint)/i.test(normalized)) return null;
   const match = normalized.match(
-    /(nft|nfts|collectibles|my nfts|my nft|check my nfts|check my nft)/i,
+    /(nft|nfts|collectibles|my nfts|my nft|check my nfts|check my nft|landplot|landplots|plot|plots|my plots|my plot|check my plots|check my plot)/i,
   );
   if (!match) return null;
   return { type: "nfts", chainId: 8453 };
@@ -305,7 +306,7 @@ async function prepareTransferTx(params: {
   };
 }
 
-async function fetchWalletNfts(address: `0x${string}`) {
+async function fetchWalletNfts(address: `0x${string}`, collectionAddress?: string) {
   const apiKey = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
   if (!apiKey) {
     throw new Error("Moralis API key is not configured.");
@@ -346,9 +347,17 @@ async function fetchWalletNfts(address: `0x${string}`) {
     cursor = data?.cursor || null;
   } while (cursor && allItems.length < MAX_ITEMS);
 
+  const normalizedCollection = collectionAddress?.toLowerCase();
+  const filteredItems = normalizedCollection
+    ? allItems.filter(
+        (item) =>
+          String(item?.token_address || "").toLowerCase() === normalizedCollection,
+      )
+    : allItems;
+
   const truncated = Boolean(cursor && allItems.length >= MAX_ITEMS);
 
-  return { items: allItems, truncated };
+  return { items: filteredItems, truncated };
 }
 
 function getTierRange(tier: "Premium" | "Legendary") {
@@ -927,7 +936,10 @@ const ClimateAgentPage = () => {
           return;
         }
 
-        const data = await fetchWalletNfts(address as `0x${string}`);
+        const data = await fetchWalletNfts(
+          address as `0x${string}`,
+          nftInfo.address,
+        );
         const items = Array.isArray(data?.items) ? data.items : [];
 
         if (items.length === 0) {
@@ -939,23 +951,21 @@ const ClimateAgentPage = () => {
         }
 
         const nftCards = items.map((nft: any, index: number) => {
-          const name = nft.normalized_metadata?.name || nft.name || "Unnamed NFT";
           const tokenId = nft.token_id?.toString?.() || "0";
-          const image =
-            normalizeIpfsUrl(
-              nft.normalized_metadata?.image ||
-              nft.normalized_metadata?.image_url ||
-              nft.normalized_metadata?.imageUrl ||
-              nft.metadata?.image ||
-              nft.image,
-            ) || null;
-          const collectionName = nft.name || nft.normalized_metadata?.collectionName || null;
+          const tokenNumber = Number(tokenId);
+          let placeholder = "/assets/images/apps/100m2v1.jpg";
+          if (tokenNumber >= 1 && tokenNumber <= 400) {
+            placeholder = "/assets/images/apps/1000m2v1.jpg";
+          } else if (tokenNumber >= 401 && tokenNumber <= 1200) {
+            placeholder = "/assets/images/apps/500m2v1.jpg";
+          }
+
           return {
             id: `${nft.token_address || "nft"}-${tokenId}-${index}`,
-            name,
+            name: `Tokenized Plot #${tokenId}`,
             tokenId,
-            image,
-            collectionName,
+            image: placeholder,
+            collectionName: "Tokenized Plots",
           };
         });
 
@@ -1427,7 +1437,7 @@ const ClimateAgentPage = () => {
                                     key={nft.id}
                                     className="rounded-lg border border-defaultborder/40 bg-white/80 dark:bg-bodybg p-2 shadow-sm"
                                   >
-                                    <div className="aspect-square w-full overflow-hidden rounded-md bg-slate-100 dark:bg-bodybg">
+                                    <div className="aspect-[4/5] w-full overflow-hidden rounded-md bg-slate-100 dark:bg-bodybg">
                                       {nft.image ? (
                                         <img
                                           src={nft.image}
