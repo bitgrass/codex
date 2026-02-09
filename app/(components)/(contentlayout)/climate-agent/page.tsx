@@ -960,12 +960,15 @@ const ClimateAgentPage = () => {
             placeholder = "/assets/images/apps/500m2v1.jpg";
           }
 
+          const collectionName =
+            nft.name || nft.normalized_metadata?.collectionName || "Tokenized Landplot";
+
           return {
             id: `${nft.token_address || "nft"}-${tokenId}-${index}`,
-            name: `Tokenized Plot #${tokenId}`,
+            name: `Tokenized Landplot #${tokenId}`,
             tokenId,
             image: placeholder,
-            collectionName: "Tokenized Plots",
+            collectionName,
           };
         });
 
