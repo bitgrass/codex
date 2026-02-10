@@ -52,6 +52,10 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
     chainId: z.literal(8453),
   }),
   z.object({
+    type: z.literal("claim_bco2"),
+    chainId: z.literal(8453),
+  }),
+  z.object({
     type: z.literal("stake"),
     tokenIds: z.array(z.number()).optional(),
     stakeAll: z.boolean().optional(),
@@ -213,6 +217,19 @@ function parseNftsRegex(message: string) {
     type: "nfts" as const,
     chainId: 8453 as const,
   };
+}
+
+function parseClaimRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  const match = normalized.match(
+    /(claim|collect|withdraw)\s*(my)?\s*(bco2|bc02|rewards|earnings)/i,
+  );
+
+  if (!match) {
+    return { type: "unknown" as const, reason: "No claim command detected." };
+  }
+
+  return { type: "claim_bco2" as const, chainId: 8453 as const };
 }
 
 function parseStakeRegex(message: string) {
@@ -396,6 +413,14 @@ export async function POST(request: Request) {
   }
 
   try {
+    const claim = parseClaimRegex(message);
+    if (claim.type !== "unknown") {
+      const reply = walletConnected
+        ? "Got it — claiming your BCO2 rewards now."
+        : "Please connect your wallet first so I can claim your BCO2 rewards.";
+      return Response.json({ reply, intent: claim });
+    }
+
     const historyText = history
       .map((entry) => `${entry.role === "user" ? "User" : "Assistant"}: ${entry.content}`)
       .join("\n");
@@ -413,6 +438,7 @@ export async function POST(request: Request) {
         "You CAN initiate swaps (ETH <-> USDC) and transfers (ETH/USDC) on Base via the user's connected wallet, " +
         "but the user must approve the transaction in their wallet. " +
         "You CAN check balances and NFTs when a wallet is connected. " +
+        "You CAN claim BCO2 rewards for staked land plots when asked. " +
         "You CAN stake and unstake land plots (Legendary/Premium/Standard) when asked. " +
         "You CAN help buy tokenized plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base. " +
         `Wallet connected: ${walletConnected ? "yes" : "no"}. ` +
@@ -477,6 +503,14 @@ export async function POST(request: Request) {
         ? "Got it — checking your Base NFTs now."
         : "Please connect your wallet first so I can check your Base NFTs.";
       return Response.json({ reply, intent: nfts });
+    }
+
+    const claim = parseClaimRegex(message);
+    if (claim.type !== "unknown") {
+      reply = walletConnected
+        ? "Got it — claiming your BCO2 rewards now."
+        : "Please connect your wallet first so I can claim your BCO2 rewards.";
+      return Response.json({ reply, intent: claim });
     }
 
     const transfer = parseTransferRegex(message);

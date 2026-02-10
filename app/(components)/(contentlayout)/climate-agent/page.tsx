@@ -88,6 +88,10 @@ type ParsedIntent =
     chainId: 8453;
   }
   | {
+    type: "claim_bco2";
+    chainId: 8453;
+  }
+  | {
     type: "transfer";
     amount: string;
     symbol: "ETH" | "USDC";
@@ -211,6 +215,14 @@ function parseEarningsLocal(text: string): ParsedIntent | null {
     /(bco2|bc02).*(earned|earnings?|so far|total)/i.test(normalized)
   ) {
     return { type: "total_earned", chainId: 8453 };
+  }
+  return null;
+}
+
+function parseClaimLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  if (/(claim|collect|redeem|withdraw).*(bco2|bc02|rewards?)/i.test(normalized)) {
+    return { type: "claim_bco2", chainId: 8453 };
   }
   return null;
 }
@@ -1078,6 +1090,10 @@ const ClimateAgentPage = () => {
       if (localEarnings) {
         return { reply: json.reply, intent: localEarnings };
       }
+      const localClaim = parseClaimLocal(text);
+      if (localClaim) {
+        return { reply: json.reply, intent: localClaim };
+      }
       const localStake = parseStakeLocal(text);
       if (localStake) {
         return { reply: json.reply, intent: localStake };
@@ -1392,6 +1408,86 @@ const ClimateAgentPage = () => {
             `{{ICON_LEGENDARY}}Legendary Plots : ${legendaryReadable} BCO2\n` +
             `{{ICON_PREMIUM}}Premium Plots : ${premiumReadable} BCO2\n` +
             `{{ICON_STANDARD}}Standard Plots : ${standardReadable} BCO2`,
+          status: "success",
+        });
+        return;
+      }
+
+      if (intent.type === "claim_bco2") {
+        updateMessage(actionId, {
+          content: "Claiming your BCO2 rewards...",
+          status: "pending",
+        });
+
+        const isOnBase = await ensureBaseChain();
+        if (!isOnBase) {
+          updateMessage(actionId, {
+            content: "Please switch your wallet network to Base (chainId 8453) and try again.",
+            status: "error",
+          });
+          return;
+        }
+
+        const hasGas = await checkGasBalance(address as `0x${string}`);
+        if (!hasGas) {
+          updateMessage(actionId, {
+            content: "Insufficient funds for gas fee. Please fund your wallet with ETH.",
+            status: "error",
+          });
+          return;
+        }
+
+        const rewardsLegendary = await getStakeInfo(
+          walletClient,
+          LEGENDARY_POOL_ADDRESS as `0x${string}`,
+          address as `0x${string}`,
+        );
+        const rewardsPremium = await getStakeInfo(
+          walletClient,
+          PREMIUM_POOL_ADDRESS as `0x${string}`,
+          address as `0x${string}`,
+        );
+        const rewardsStandard = await getStakeInfo(
+          walletClient,
+          STANDARD_POOL_ADDRESS as `0x${string}`,
+          address as `0x${string}`,
+        );
+
+        const pools: { address: string; name: string; rewards: bigint }[] = [];
+        if (rewardsLegendary > 0n) {
+          pools.push({ address: LEGENDARY_POOL_ADDRESS, name: "Legendary", rewards: rewardsLegendary });
+        }
+        if (rewardsPremium > 0n) {
+          pools.push({ address: PREMIUM_POOL_ADDRESS, name: "Premium", rewards: rewardsPremium });
+        }
+        if (rewardsStandard > 0n) {
+          pools.push({ address: STANDARD_POOL_ADDRESS, name: "Standard", rewards: rewardsStandard });
+        }
+
+        if (pools.length === 0) {
+          updateMessage(actionId, {
+            content: "No rewards available to claim.",
+            status: "success",
+          });
+          return;
+        }
+
+        const claimIface = new ethers.Interface([
+          "function claimRewards()",
+        ]);
+
+        for (const pool of pools) {
+          const claimData = claimIface.encodeFunctionData("claimRewards") as `0x${string}`;
+          await sendTx({
+            to: pool.address,
+            data: claimData,
+            value: 0n,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+
+        updateMessage(actionId, {
+          content: "Claimed BCO2 rewards successfully.",
           status: "success",
         });
         return;
