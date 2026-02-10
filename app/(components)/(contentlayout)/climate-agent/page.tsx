@@ -249,6 +249,40 @@ async function getErc20Balance(
   }
 }
 
+async function getPendingNonce(
+  walletClient: any,
+  account: `0x${string}`,
+): Promise<bigint | null> {
+  if (!walletClient?.request) return null;
+  try {
+    const hex = (await walletClient.request({
+      method: "eth_getTransactionCount",
+      params: [account, "pending"],
+    })) as string;
+    return BigInt(hex);
+  } catch {
+    return null;
+  }
+}
+
+async function waitForReceipt(
+  walletClient: any,
+  txHash: string,
+  timeoutMs = 90_000,
+) {
+  if (!walletClient?.request) return null;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const receipt = (await walletClient.request({
+      method: "eth_getTransactionReceipt",
+      params: [txHash],
+    })) as any;
+    if (receipt) return receipt;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return null;
+}
+
 async function prepareTransferTx(params: {
   symbol: "ETH" | "USDC";
   amount: string;
@@ -269,7 +303,7 @@ async function prepareTransferTx(params: {
     return { error: "Invalid transfer amount." as const };
   }
 
-  if (rawAmount <= 0n) {
+  if (rawAmount <= BigInt(0)) {
     return { error: "Amount must be greater than 0." as const };
   }
 
@@ -301,7 +335,7 @@ async function prepareTransferTx(params: {
     tx: {
       to: USDC_TOKEN.address as `0x${string}`,
       data,
-      value: 0n,
+      value: BigInt(0),
     },
   };
 }
@@ -425,7 +459,7 @@ async function buildStandardMintTx(address: `0x${string}`) {
   const readSeaDrop = new ethers.Contract(SEADROP_ADDRESS, SeaDropABI, provider);
   const publicDrop = await readSeaDrop.getPublicDrop(CONTRACT_ADDRESS);
   const mintPrice: bigint = BigInt(publicDrop.mintPrice);
-  const quantity = 1n;
+  const quantity = BigInt(1);
   const totalPrice = mintPrice * quantity;
 
   const iface = new ethers.Interface(SeaDropABI);
@@ -759,6 +793,7 @@ const ClimateAgentPage = () => {
     gas?: bigint;
     maxFeePerGas?: bigint;
     maxPriorityFeePerGas?: bigint;
+    nonce?: bigint;
   }) => {
     if (!walletClient) {
       throw new Error("Wallet client not available.");
@@ -770,9 +805,10 @@ const ClimateAgentPage = () => {
         to: tx.to,
         data: tx.data,
         value: tx.value,
-        ...(tx.gas && tx.gas > 0n ? { gas: tx.gas } : {}),
+        ...(tx.gas && tx.gas > BigInt(0) ? { gas: tx.gas } : {}),
         ...(tx.maxFeePerGas ? { maxFeePerGas: tx.maxFeePerGas } : {}),
         ...(tx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas } : {}),
+        ...(typeof tx.nonce === "bigint" ? { nonce: tx.nonce } : {}),
       })) as string;
     }
 
@@ -789,11 +825,12 @@ const ClimateAgentPage = () => {
           to: tx.to,
           data: tx.data,
           value: bigintToHex(tx.value),
-          ...(tx.gas && tx.gas > 0n ? { gas: bigintToHex(tx.gas) } : {}),
+          ...(tx.gas && tx.gas > BigInt(0) ? { gas: bigintToHex(tx.gas) } : {}),
           ...(tx.maxFeePerGas ? { maxFeePerGas: bigintToHex(tx.maxFeePerGas) } : {}),
           ...(tx.maxPriorityFeePerGas
             ? { maxPriorityFeePerGas: bigintToHex(tx.maxPriorityFeePerGas) }
             : {}),
+          ...(typeof tx.nonce === "bigint" ? { nonce: bigintToHex(tx.nonce) } : {}),
         },
       ],
     })) as string;
@@ -1044,7 +1081,7 @@ const ClimateAgentPage = () => {
         if (intent.amount === "all") {
           if (intent.fromSymbol === "ETH") {
             const ethBalance = await getEthBalance(walletClient, address as `0x${string}`);
-            if (!ethBalance || ethBalance <= 0n) {
+            if (!ethBalance || ethBalance <= BigInt(0)) {
               updateMessage(actionId, {
                 content: "No ETH balance available to swap.",
                 status: "error",
@@ -1069,7 +1106,7 @@ const ClimateAgentPage = () => {
               USDC_TOKEN.address as `0x${string}`,
               address as `0x${string}`,
             );
-            if (!usdcBalance || usdcBalance <= 0n) {
+            if (!usdcBalance || usdcBalance <= BigInt(0)) {
               updateMessage(actionId, {
                 content: "No USDC balance available to swap.",
                 status: "error",
@@ -1121,17 +1158,24 @@ const ClimateAgentPage = () => {
         // OnchainKit can return an "empty" approveTransaction; only run if it has calldata.
         if (swapTransaction.approveTransaction?.data) {
           const approveTx = swapTransaction.approveTransaction;
-          await sendTx({
+          const approveNonce = await getPendingNonce(
+            walletClient,
+            address as `0x${string}`,
+          );
+          const approveHash = await sendTx({
             to: approveTx.to,
             data: approveTx.data as `0x${string}`,
             value: approveTx.value,
             ...(approveTx.gas ? { gas: approveTx.gas } : {}),
             ...(approveTx.maxFeePerGas ? { maxFeePerGas: approveTx.maxFeePerGas } : {}),
             ...(approveTx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: approveTx.maxPriorityFeePerGas } : {}),
+            ...(typeof approveNonce === "bigint" ? { nonce: approveNonce } : {}),
           });
+          await waitForReceipt(walletClient, approveHash);
         }
 
         const tx = swapTransaction.transaction;
+        const swapNonce = await getPendingNonce(walletClient, address as `0x${string}`);
         const txHash = await sendTx({
           to: tx.to,
           data: tx.data as `0x${string}`,
@@ -1139,6 +1183,7 @@ const ClimateAgentPage = () => {
           ...(tx.gas ? { gas: tx.gas } : {}),
           ...(tx.maxFeePerGas ? { maxFeePerGas: tx.maxFeePerGas } : {}),
           ...(tx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas } : {}),
+          ...(typeof swapNonce === "bigint" ? { nonce: swapNonce } : {}),
         });
 
         updateMessage(actionId, {

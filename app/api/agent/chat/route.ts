@@ -84,15 +84,17 @@ function parseSwapRegex(message: string) {
   }
 
   const normalizedFrom = fromSymbol === "WETH" ? "ETH" : fromSymbol;
+  const normalizedTo =
+    buySymbol === "WETH" || buySymbol === "ETHEREUM" ? "ETH" : buySymbol;
   if (!normalizedFrom || (normalizedFrom !== "ETH" && normalizedFrom !== "USDC")) {
     return { type: "unknown" as const, reason: "Only ETH or USDC are supported." };
   }
 
-  if (buySymbol !== "USDC" && buySymbol !== "ETH") {
+  if (normalizedTo !== "USDC" && normalizedTo !== "ETH") {
     return { type: "unknown" as const, reason: "Only ETH or USDC are supported." };
   }
 
-  if (normalizedFrom === buySymbol) {
+  if (normalizedFrom === normalizedTo) {
     return { type: "unknown" as const, reason: "Swap tokens must be different." };
   }
 
@@ -100,7 +102,7 @@ function parseSwapRegex(message: string) {
     type: "swap" as const,
     amount: isAllAmount ? "all" : amount,
     fromSymbol: normalizedFrom as "ETH" | "USDC",
-    toSymbol: buySymbol as "ETH" | "USDC",
+    toSymbol: normalizedTo as "ETH" | "USDC",
     chainId: 8453 as const,
   };
 }
