@@ -229,7 +229,7 @@ function parseClaimLocal(text: string): ParsedIntent | null {
 
 function parseStakeLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
-  if (/(unstake|unstaking|withdraw)/i.test(normalized)) return null;
+  if (/(unstake|unstaek|unstaking|withdraw)/i.test(normalized)) return null;
   if (!/(stake|staking)/i.test(normalized)) return null;
 
   const tierMatch = normalized.match(/(legendary|premium|standard)/i);
@@ -261,7 +261,7 @@ function parseStakeLocal(text: string): ParsedIntent | null {
 
 function parseUnstakeLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
-  if (!/(unstake|unstaking|withdraw)/i.test(normalized)) return null;
+  if (!/(unstake|unstaek|unstaking|withdraw)/i.test(normalized)) return null;
 
   const tierMatch = normalized.match(/(legendary|premium|standard)/i);
   const tier = tierMatch?.[1]
@@ -271,7 +271,7 @@ function parseUnstakeLocal(text: string): ParsedIntent | null {
         | "Standard"
     : undefined;
 
-  const allMatch = normalized.match(/(unstake|withdraw)\s+(all|max)(?:\s+my)?/i);
+  const allMatch = normalized.match(/(unstake|unstaek|withdraw)\s+(all|max)(?:\s+my)?/i);
   if (allMatch) {
     return { type: "unstake", unstakeAll: true, tier, chainId: 8453 };
   }
@@ -1690,17 +1690,17 @@ const ClimateAgentPage = () => {
           byPool.get(pool.address)?.push(BigInt(id));
         }
 
-        const unstakeIface = new ethers.Interface([
-          "function unstake(uint256[] _tokenIds)",
+        const withdrawIface = new ethers.Interface([
+          "function withdraw(uint256[] _tokenIds)",
         ]);
 
         let processedCount = 0;
         for (const [poolAddress, ids] of Array.from(byPool.entries())) {
           if (!ids.length) continue;
-          const unstakeData = unstakeIface.encodeFunctionData("unstake", [ids]) as `0x${string}`;
+          const withdrawData = withdrawIface.encodeFunctionData("withdraw", [ids]) as `0x${string}`;
           await sendTx({
             to: poolAddress,
-            data: unstakeData,
+            data: withdrawData,
             value: BigInt(0),
           });
           processedCount += ids.length;

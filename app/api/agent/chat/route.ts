@@ -202,6 +202,9 @@ function parseEarningsRegex(message: string) {
 
 function parseNftsRegex(message: string) {
   const normalized = message.trim().toLowerCase();
+  if (/(unstake|unstaek|unstaking|withdraw)/i.test(normalized)) {
+    return { type: "unknown" as const, reason: "Unstake command detected." };
+  }
   if (/(buy|purchase|get|own|mint)/i.test(normalized)) {
     return { type: "unknown" as const, reason: "Buy intent detected." };
   }
@@ -271,7 +274,7 @@ function parseStakeRegex(message: string) {
 
 function parseUnstakeRegex(message: string) {
   const normalized = message.trim().toLowerCase();
-  if (!/(unstake|unstaking|withdraw)/i.test(normalized)) {
+  if (!/(unstake|unstaek|unstaking|withdraw)/i.test(normalized)) {
     return { type: "unknown" as const, reason: "No unstake command detected." };
   }
 
@@ -283,7 +286,7 @@ function parseUnstakeRegex(message: string) {
         | "Standard"
     : undefined;
 
-  const allMatch = normalized.match(/(unstake|withdraw)\s+(all|max)(?:\s+my)?/i);
+  const allMatch = normalized.match(/(unstake|unstaek|withdraw)\s+(all|max)(?:\s+my)?/i);
   if (allMatch) {
     return { type: "unstake" as const, unstakeAll: true, tier, chainId: 8453 as const };
   }
