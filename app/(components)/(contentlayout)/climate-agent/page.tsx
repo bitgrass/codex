@@ -61,12 +61,25 @@ const USDC_TOKEN: Token = {
   chainId: BASE_CHAIN_ID,
 };
 
+const LEGENDARY_POOL_ADDRESS = "0xAbdD77516765235e3121773bcB4E33984c604D7C";
+const PREMIUM_POOL_ADDRESS = "0xCe6409e0146ffFa252Dbb3105c1D5285c73b4274";
+const STANDARD_POOL_ADDRESS = "0xE70886Db1d0F52B3B8Ced3538E048d8263C16302";
+const REWARD_TOKEN_ADDRESS = "0x20429F731096e359910921994A267d32ef576720";
+
 type ParsedIntent =
   | {
     type: "swap";
     amount: string;
     fromSymbol: "ETH" | "USDC";
     toSymbol: "ETH" | "USDC";
+    chainId: 8453;
+  }
+  | {
+    type: "current_earnings";
+    chainId: 8453;
+  }
+  | {
+    type: "total_earned";
     chainId: 8453;
   }
   | {
@@ -159,6 +172,26 @@ function parseBalanceLocal(text: string): ParsedIntent | null {
   return { type: "balance", chainId: 8453 };
 }
 
+function parseEarningsLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  if (
+    /(current|now|pending|unclaimed).*(earn|earning|earned|bco2|bc02)/i.test(normalized) ||
+    /(earn|earning).*(current|now|pending|unclaimed)/i.test(normalized)
+  ) {
+    return { type: "current_earnings", chainId: 8453 };
+  }
+  if (
+    /(total|overall|all time).*(earn|earned|earning|bco2|bc02)/i.test(normalized) ||
+    /(how much).*(earned|earn|earning|bco2|bc02)/i.test(normalized) ||
+    /(earned|earnings?)\s*(bco2|bc02)/i.test(normalized) ||
+    /(total|overall|all time)\s*(bco2|bc02)/i.test(normalized) ||
+    /(bco2|bc02).*(earned|earnings?|so far|total)/i.test(normalized)
+  ) {
+    return { type: "total_earned", chainId: 8453 };
+  }
+  return null;
+}
+
 function parseNftsLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
   if (/(buy|purchase|get|own|mint)/i.test(normalized)) return null;
@@ -245,6 +278,85 @@ async function getErc20Balance(
   } catch {
     return null;
   }
+}
+
+async function getStakeInfo(
+  walletClient: any,
+  poolAddress: `0x${string}`,
+  account: `0x${string}`,
+): Promise<bigint> {
+  if (!walletClient?.request) return BigInt(0);
+  try {
+    const iface = new ethers.Interface([
+      "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
+    ]);
+    const data = iface.encodeFunctionData("getStakeInfo", [account]);
+    const hex = (await walletClient.request({
+      method: "eth_call",
+      params: [{ to: poolAddress, data }, "latest"],
+    })) as string;
+    const decoded = iface.decodeFunctionResult("getStakeInfo", hex);
+    const rewards = decoded?.[1] as bigint;
+    return rewards ?? BigInt(0);
+  } catch {
+    return BigInt(0);
+  }
+}
+
+async function fetchTotalEarned(address: `0x${string}`) {
+  const apiKey = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
+  if (!apiKey) {
+    throw new Error("Moralis API key is not configured.");
+  }
+
+  const response = await fetch(
+    `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers?chain=base&contract_addresses=${REWARD_TOKEN_ADDRESS}&limit=100&order=DESC`,
+    {
+      headers: {
+        accept: "application/json",
+        "X-API-Key": apiKey,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch earned rewards.");
+  }
+
+  const data = await response.json();
+  const items = Array.isArray(data?.result) ? data.result : [];
+  const addressLower = address.toLowerCase();
+  const legendaryLower = LEGENDARY_POOL_ADDRESS.toLowerCase();
+  const premiumLower = PREMIUM_POOL_ADDRESS.toLowerCase();
+  const standardLower = STANDARD_POOL_ADDRESS.toLowerCase();
+
+  let totalAll = BigInt(0);
+  let legendaryTotal = BigInt(0);
+  let premiumTotal = BigInt(0);
+  let standardTotal = BigInt(0);
+  for (const tx of items) {
+    const fromAddress = String(tx.from_address || "").toLowerCase();
+    const toAddress = String(tx.to_address || "").toLowerCase();
+    if (toAddress !== addressLower) continue;
+    const value = BigInt(tx.value || 0);
+    if (
+      fromAddress === legendaryLower ||
+      fromAddress === premiumLower ||
+      fromAddress === standardLower
+    ) {
+      totalAll += value;
+      if (fromAddress === legendaryLower) legendaryTotal += value;
+      if (fromAddress === premiumLower) premiumTotal += value;
+      if (fromAddress === standardLower) standardTotal += value;
+    }
+  }
+
+  return {
+    total: formatUnits(totalAll, 18),
+    legendary: formatUnits(legendaryTotal, 18),
+    premium: formatUnits(premiumTotal, 18),
+    standard: formatUnits(standardTotal, 18),
+  };
 }
 
 async function getPendingNonce(
@@ -646,11 +758,26 @@ const ClimateAgentPage = () => {
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    const withStrong = escaped.replace(
-      /&lt;strong&gt;([\s\S]*?)&lt;\/strong&gt;/g,
-      "<strong>$1</strong>"
+    const withIcons = escaped
+      .replace(
+        /\{\{ICON_LEGENDARY\}\}/g,
+        '<img src="/assets/images/svg/lsvg.svg" alt="Legendary" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      )
+      .replace(
+        /\{\{ICON_PREMIUM\}\}/g,
+        '<img src="/assets/images/svg/psvg.svg" alt="Premium" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      )
+      .replace(
+        /\{\{ICON_STANDARD\}\}/g,
+        '<img src="/assets/images/svg/ssvg.svg" alt="Standard" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      );
+    const withEarnIcon = withIcons.replace(
+      /\{\{ICON_EARN\}\}/g,
+      '<img src="/assets/images/svg/EarnBo2.svg" alt="Earn BCO2" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
     );
-    return withStrong.replace(/\n/g, "<br />");
+    return withEarnIcon
+      .replace(/&lt;strong&gt;([\s\S]*?)&lt;\/strong&gt;/g, "<strong>$1</strong>")
+      .replace(/\n/g, "<br />");
   };
 
   useEffect(() => {
@@ -738,6 +865,10 @@ const ClimateAgentPage = () => {
       const localBalance = parseBalanceLocal(text);
       if (localBalance) {
         return { reply: json.reply, intent: localBalance };
+      }
+      const localEarnings = parseEarningsLocal(text);
+      if (localEarnings) {
+        return { reply: json.reply, intent: localEarnings };
       }
       const localBuy = parseBuyPlotLocal(text);
       if (localBuy) {
@@ -943,6 +1074,75 @@ const ClimateAgentPage = () => {
 
         updateMessage(actionId, {
           content: `Base balances — ETH: ${ethReadable}, USDC: ${usdcReadable}.`,
+          status: "success",
+        });
+        return;
+      }
+
+      if (intent.type === "total_earned") {
+        updateMessage(actionId, {
+          content: "Checking your total BCO2 earned...",
+          status: "pending",
+        });
+
+        try {
+          const totals = await fetchTotalEarned(address as `0x${string}`);
+        updateMessage(actionId, {
+          content:
+            `Your Total earning from your Lands : <strong>${totals.total} BCO2</strong> {{ICON_EARN}}\n` +
+            `\n`+   
+            `{{ICON_LEGENDARY}}Legendary Plots : ${totals.legendary} BCO2\n` +
+            `{{ICON_PREMIUM}}Premium Plots : ${totals.premium} BCO2\n` +
+            `{{ICON_STANDARD}}Standard Plots : ${totals.standard} BCO2`,
+          status: "success",
+        });
+        } catch (error: any) {
+          updateMessage(actionId, {
+            content:
+              typeof error?.message === "string"
+                ? error.message
+                : "Failed to fetch total earned.",
+            status: "error",
+          });
+        }
+        return;
+      }
+
+      if (intent.type === "current_earnings") {
+        updateMessage(actionId, {
+          content: "Checking your current BCO2 earnings...",
+          status: "pending",
+        });
+
+        const rewardsLegendary = await getStakeInfo(
+          walletClient,
+          LEGENDARY_POOL_ADDRESS as `0x${string}`,
+          address as `0x${string}`,
+        );
+        const rewardsPremium = await getStakeInfo(
+          walletClient,
+          PREMIUM_POOL_ADDRESS as `0x${string}`,
+          address as `0x${string}`,
+        );
+        const rewardsStandard = await getStakeInfo(
+          walletClient,
+          STANDARD_POOL_ADDRESS as `0x${string}`,
+          address as `0x${string}`,
+        );
+
+        const totalCurrent = rewardsLegendary + rewardsPremium + rewardsStandard;
+        const totalReadable = formatUnits(totalCurrent, 18);
+        const legendaryReadable = formatUnits(rewardsLegendary, 18);
+        const premiumReadable = formatUnits(rewardsPremium, 18);
+        const standardReadable = formatUnits(rewardsStandard, 18);
+
+        updateMessage(actionId, {
+          content:
+            `Current earnings from your Lands :<strong>${totalReadable} BCO2</strong> {{ICON_EARN}} \n` +
+            `\n`+            
+            `{{ICON_LEGENDARY}}Legendary Plots : ${legendaryReadable} BCO2\n` +
+            `{{ICON_PREMIUM}}Premium Plots : ${premiumReadable} BCO2\n` +
+            `{{ICON_STANDARD}}Standard Plots : ${standardReadable} BCO2`,
           status: "success",
         });
         return;

@@ -29,6 +29,14 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
     chainId: z.literal(8453),
   }),
   z.object({
+    type: z.literal("current_earnings"),
+    chainId: z.literal(8453),
+  }),
+  z.object({
+    type: z.literal("total_earned"),
+    chainId: z.literal(8453),
+  }),
+  z.object({
     type: z.literal("transfer"),
     amount: z.string().min(1),
     symbol: z.enum(["ETH", "USDC"]),
@@ -152,6 +160,26 @@ function parseBalanceRegex(message: string) {
     type: "balance" as const,
     chainId: 8453 as const,
   };
+}
+
+function parseEarningsRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  if (
+    /(current|now|pending|unclaimed).*(earn|earning|earned|bco2|bc02)/i.test(normalized) ||
+    /(earn|earning).*(current|now|pending|unclaimed)/i.test(normalized)
+  ) {
+    return { type: "current_earnings" as const, chainId: 8453 as const };
+  }
+  if (
+    /(total|overall|all time).*(earn|earned|earning|bco2|bc02)/i.test(normalized) ||
+    /(how much).*(earned|earn|earning|bco2|bc02)/i.test(normalized) ||
+    /(earned|earnings?)\s*(bco2|bc02)/i.test(normalized) ||
+    /(total|overall|all time)\s*(bco2|bc02)/i.test(normalized) ||
+    /(bco2|bc02).*(earned|earnings?|so far|total)/i.test(normalized)
+  ) {
+    return { type: "total_earned" as const, chainId: 8453 as const };
+  }
+  return { type: "unknown" as const, reason: "No earnings command detected." };
 }
 
 function parseNftsRegex(message: string) {
@@ -325,6 +353,16 @@ export async function POST(request: Request) {
         ? "Got it — checking your Base wallet balances now."
         : "Please connect your wallet first so I can check your Base balances.";
       return Response.json({ reply, intent: balance });
+    }
+
+    const earnings = parseEarningsRegex(message);
+    if (earnings.type !== "unknown") {
+      reply = walletConnected
+        ? earnings.type === "total_earned"
+          ? "Got it — checking your total BCO2 earned now."
+          : "Got it — checking your current BCO2 earnings now."
+        : "Please connect your wallet first so I can check your BCO2 earnings.";
+      return Response.json({ reply, intent: earnings });
     }
 
     const buyPlot = parseBuyPlotRegex(message);
