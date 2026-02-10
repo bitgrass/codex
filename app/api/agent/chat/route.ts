@@ -505,14 +505,6 @@ export async function POST(request: Request) {
       return Response.json({ reply, intent: nfts });
     }
 
-    const claim = parseClaimRegex(message);
-    if (claim.type !== "unknown") {
-      reply = walletConnected
-        ? "Got it — claiming your BCO2 rewards now."
-        : "Please connect your wallet first so I can claim your BCO2 rewards.";
-      return Response.json({ reply, intent: claim });
-    }
-
     const transfer = parseTransferRegex(message);
     if (transfer.type !== "unknown") {
       reply = "Got it — preparing that transfer now.";

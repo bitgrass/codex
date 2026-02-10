@@ -1454,13 +1454,13 @@ const ClimateAgentPage = () => {
         );
 
         const pools: { address: string; name: string; rewards: bigint }[] = [];
-        if (rewardsLegendary > 0n) {
+        if (rewardsLegendary > BigInt(0)) {
           pools.push({ address: LEGENDARY_POOL_ADDRESS, name: "Legendary", rewards: rewardsLegendary });
         }
-        if (rewardsPremium > 0n) {
+        if (rewardsPremium > BigInt(0)) {
           pools.push({ address: PREMIUM_POOL_ADDRESS, name: "Premium", rewards: rewardsPremium });
         }
-        if (rewardsStandard > 0n) {
+        if (rewardsStandard > BigInt(0)) {
           pools.push({ address: STANDARD_POOL_ADDRESS, name: "Standard", rewards: rewardsStandard });
         }
 
@@ -1481,7 +1481,7 @@ const ClimateAgentPage = () => {
           await sendTx({
             to: pool.address,
             data: claimData,
-            value: 0n,
+            value: BigInt(0),
           });
           await new Promise((resolve) => setTimeout(resolve, 3000));
         }
