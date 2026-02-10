@@ -52,6 +52,20 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
     chainId: z.literal(8453),
   }),
   z.object({
+    type: z.literal("stake"),
+    tokenIds: z.array(z.number()).optional(),
+    stakeAll: z.boolean().optional(),
+    tier: z.enum(["Legendary", "Premium", "Standard"]).optional(),
+    chainId: z.literal(8453),
+  }),
+  z.object({
+    type: z.literal("unstake"),
+    tokenIds: z.array(z.number()).optional(),
+    unstakeAll: z.boolean().optional(),
+    tier: z.enum(["Legendary", "Premium", "Standard"]).optional(),
+    chainId: z.literal(8453),
+  }),
+  z.object({
     type: z.literal("buy_plot"),
     tier: z.enum(["Standard", "Premium", "Legendary"]),
     size: z.enum(["100", "500", "1000"]),
@@ -201,6 +215,73 @@ function parseNftsRegex(message: string) {
   };
 }
 
+function parseStakeRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  if (/(unstake|unstaking|withdraw)/i.test(normalized)) {
+    return { type: "unknown" as const, reason: "Unstake command detected." };
+  }
+  if (!/(stake|staking)/i.test(normalized)) {
+    return { type: "unknown" as const, reason: "No stake command detected." };
+  }
+
+  const tierMatch = normalized.match(/(legendary|premium|standard)/i);
+  const tier = tierMatch?.[1]
+    ? (tierMatch[1][0].toUpperCase() + tierMatch[1].slice(1)) as
+        | "Legendary"
+        | "Premium"
+        | "Standard"
+    : undefined;
+
+  const allMatch = normalized.match(/stake\s+(all|max)(?:\s+my)?/i);
+  if (allMatch) {
+    return { type: "stake" as const, stakeAll: true, tier, chainId: 8453 as const };
+  }
+
+  const idMatch = normalized.match(/(?:plot|landplot|land|nft).*?(\d{1,6})/i);
+  if (idMatch) {
+    const id = Number(idMatch[1]);
+    if (!Number.isNaN(id) && id > 0) {
+      return { type: "stake" as const, tokenIds: [id], chainId: 8453 as const };
+    }
+  }
+
+  if (/(plot|landplot|land|nft)/i.test(normalized)) {
+    return { type: "stake" as const, chainId: 8453 as const };
+  }
+
+  return { type: "unknown" as const, reason: "No stake id detected." };
+}
+
+function parseUnstakeRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  if (!/(unstake|unstaking|withdraw)/i.test(normalized)) {
+    return { type: "unknown" as const, reason: "No unstake command detected." };
+  }
+
+  const tierMatch = normalized.match(/(legendary|premium|standard)/i);
+  const tier = tierMatch?.[1]
+    ? (tierMatch[1][0].toUpperCase() + tierMatch[1].slice(1)) as
+        | "Legendary"
+        | "Premium"
+        | "Standard"
+    : undefined;
+
+  const allMatch = normalized.match(/(unstake|withdraw)\s+(all|max)(?:\s+my)?/i);
+  if (allMatch) {
+    return { type: "unstake" as const, unstakeAll: true, tier, chainId: 8453 as const };
+  }
+
+  const idMatch = normalized.match(/(?:plot|landplot|land|nft).*?(\d{1,6})/i);
+  if (idMatch) {
+    const id = Number(idMatch[1]);
+    if (!Number.isNaN(id) && id > 0) {
+      return { type: "unstake" as const, tokenIds: [id], chainId: 8453 as const };
+    }
+  }
+
+  return { type: "unknown" as const, reason: "No unstake id detected." };
+}
+
 function parseBuyPlotRegex(message: string) {
   const normalized = message.trim().toLowerCase();
   const hasBuyVerb = /(buy|purchase|get|own|mint)/i.test(normalized);
@@ -332,6 +413,7 @@ export async function POST(request: Request) {
         "You CAN initiate swaps (ETH <-> USDC) and transfers (ETH/USDC) on Base via the user's connected wallet, " +
         "but the user must approve the transaction in their wallet. " +
         "You CAN check balances and NFTs when a wallet is connected. " +
+        "You CAN stake and unstake land plots (Legendary/Premium/Standard) when asked. " +
         "You CAN help buy tokenized plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base. " +
         `Wallet connected: ${walletConnected ? "yes" : "no"}. ` +
         `Connected address: ${address}. ` +
@@ -371,6 +453,22 @@ export async function POST(request: Request) {
         ? `Got it — preparing to buy a ${buyPlot.tier} ${buyPlot.size}m² plot.`
         : "Please connect your wallet first so I can buy a plot.";
       return Response.json({ reply, intent: buyPlot });
+    }
+
+    const stake = parseStakeRegex(message);
+    if (stake.type !== "unknown") {
+      reply = walletConnected
+        ? "Got it — preparing to stake your land plots now."
+        : "Please connect your wallet first so I can stake your land plots.";
+      return Response.json({ reply, intent: stake });
+    }
+
+    const unstake = parseUnstakeRegex(message);
+    if (unstake.type !== "unknown") {
+      reply = walletConnected
+        ? "Got it — preparing to unstake your land plots now."
+        : "Please connect your wallet first so I can unstake your land plots.";
+      return Response.json({ reply, intent: unstake });
     }
 
     const nfts = parseNftsRegex(message);

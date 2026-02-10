@@ -33,8 +33,10 @@ type ChatMessage = {
     tokenId: string;
     image: string | null;
     collectionName?: string | null;
+    status?: "staked" | "available";
   }[];
   nftTruncated?: boolean;
+  selectableNfts?: boolean;
 };
 
 const BASE_CHAIN_ID = 8453;
@@ -67,6 +69,7 @@ const LEGENDARY_POOL_ADDRESS = "0xAbdD77516765235e3121773bcB4E33984c604D7C";
 const PREMIUM_POOL_ADDRESS = "0xCe6409e0146ffFa252Dbb3105c1D5285c73b4274";
 const STANDARD_POOL_ADDRESS = "0xE70886Db1d0F52B3B8Ced3538E048d8263C16302";
 const REWARD_TOKEN_ADDRESS = "0x20429F731096e359910921994A267d32ef576720";
+const NFT_COLLECTION_ADDRESS = nftInfo.address;
 
 type ParsedIntent =
   | {
@@ -97,6 +100,20 @@ type ParsedIntent =
   }
   | {
     type: "nfts";
+    chainId: 8453;
+  }
+  | {
+    type: "stake";
+    tokenIds?: number[];
+    stakeAll?: boolean;
+    tier?: "Legendary" | "Premium" | "Standard";
+    chainId: 8453;
+  }
+  | {
+    type: "unstake";
+    tokenIds?: number[];
+    unstakeAll?: boolean;
+    tier?: "Legendary" | "Premium" | "Standard";
     chainId: 8453;
   }
   | {
@@ -195,6 +212,66 @@ function parseEarningsLocal(text: string): ParsedIntent | null {
   ) {
     return { type: "total_earned", chainId: 8453 };
   }
+  return null;
+}
+
+function parseStakeLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  if (/(unstake|unstaking|withdraw)/i.test(normalized)) return null;
+  if (!/(stake|staking)/i.test(normalized)) return null;
+
+  const tierMatch = normalized.match(/(legendary|premium|standard)/i);
+  const tier = tierMatch?.[1]
+    ? (tierMatch[1][0].toUpperCase() + tierMatch[1].slice(1)) as
+        | "Legendary"
+        | "Premium"
+        | "Standard"
+    : undefined;
+
+  const allMatch = normalized.match(/stake\s+(all|max)(?:\s+my)?/i);
+  if (allMatch) {
+    return { type: "stake", stakeAll: true, tier, chainId: 8453 };
+  }
+
+  const idMatch = normalized.match(/(?:plot|landplot|land|nft).*?(\d{1,6})/i);
+  if (idMatch) {
+    const id = Number(idMatch[1]);
+    if (!Number.isNaN(id) && id > 0) {
+      return { type: "stake", tokenIds: [id], chainId: 8453 };
+    }
+  }
+  if (/(plot|landplot|land|nft)/i.test(normalized)) {
+    return { type: "stake", chainId: 8453 };
+  }
+
+  return null;
+}
+
+function parseUnstakeLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  if (!/(unstake|unstaking|withdraw)/i.test(normalized)) return null;
+
+  const tierMatch = normalized.match(/(legendary|premium|standard)/i);
+  const tier = tierMatch?.[1]
+    ? (tierMatch[1][0].toUpperCase() + tierMatch[1].slice(1)) as
+        | "Legendary"
+        | "Premium"
+        | "Standard"
+    : undefined;
+
+  const allMatch = normalized.match(/(unstake|withdraw)\s+(all|max)(?:\s+my)?/i);
+  if (allMatch) {
+    return { type: "unstake", unstakeAll: true, tier, chainId: 8453 };
+  }
+
+  const idMatch = normalized.match(/(?:plot|landplot|land|nft).*?(\d{1,6})/i);
+  if (idMatch) {
+    const id = Number(idMatch[1]);
+    if (!Number.isNaN(id) && id > 0) {
+      return { type: "unstake", tokenIds: [id], chainId: 8453 };
+    }
+  }
+
   return null;
 }
 
@@ -309,6 +386,29 @@ async function getStakeInfo(
   }
 }
 
+async function getStakedTokenIds(
+  walletClient: any,
+  poolAddress: `0x${string}`,
+  account: `0x${string}`,
+): Promise<number[]> {
+  if (!walletClient?.request) return [];
+  try {
+    const iface = new ethers.Interface([
+      "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
+    ]);
+    const data = iface.encodeFunctionData("getStakeInfo", [account]);
+    const hex = (await walletClient.request({
+      method: "eth_call",
+      params: [{ to: poolAddress, data }, "latest"],
+    })) as string;
+    const decoded = iface.decodeFunctionResult("getStakeInfo", hex);
+    const tokens = (decoded?.[0] as bigint[]) || [];
+    return tokens.map((token) => Number(token)).filter((id) => Number.isFinite(id));
+  } catch {
+    return [];
+  }
+}
+
 async function fetchTotalEarned(address: `0x${string}`) {
   const apiKey = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
   if (!apiKey) {
@@ -387,6 +487,64 @@ async function fetchTokenPriceUsd(tokenAddress: string, chain: "base" | "eth") {
 
   const data = await response.json();
   return Number(data?.usdPrice || 0);
+}
+
+async function checkGasBalance(address: `0x${string}`) {
+  const apiKey = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
+  if (!apiKey) return true;
+  try {
+    const response = await fetch(
+      `https://deep-index.moralis.io/api/v2.2/wallets/${address}/tokens?chain=base`,
+      {
+        headers: {
+          accept: "application/json",
+          "X-API-Key": apiKey,
+        },
+      },
+    );
+    const data = await response.json();
+    const nativeToken = data?.result?.find((token: any) => token.native_token === true);
+    const balanceWei = BigInt(nativeToken?.balance || "0");
+    const minGas = BigInt("2000000000000"); // 0.000002 ETH
+    return balanceWei >= minGas;
+  } catch {
+    return true;
+  }
+}
+
+function getPoolForTokenId(tokenId: number) {
+  if (tokenId >= 1 && tokenId <= 400) {
+    return { name: "Legendary", address: LEGENDARY_POOL_ADDRESS };
+  }
+  if (tokenId >= 401 && tokenId <= 1200) {
+    return { name: "Premium", address: PREMIUM_POOL_ADDRESS };
+  }
+  if (tokenId >= 1201 && tokenId <= 3200) {
+    return { name: "Standard", address: STANDARD_POOL_ADDRESS };
+  }
+  return null;
+}
+
+async function isApprovedForAll(
+  walletClient: any,
+  owner: `0x${string}`,
+  operator: `0x${string}`,
+) {
+  if (!walletClient?.request) return false;
+  try {
+    const iface = new ethers.Interface([
+      "function isApprovedForAll(address owner, address operator) view returns (bool)",
+    ]);
+    const data = iface.encodeFunctionData("isApprovedForAll", [owner, operator]);
+    const hex = (await walletClient.request({
+      method: "eth_call",
+      params: [{ to: NFT_COLLECTION_ADDRESS, data }, "latest"],
+    })) as string;
+    const decoded = iface.decodeFunctionResult("isApprovedForAll", hex);
+    return Boolean(decoded?.[0]);
+  } catch {
+    return false;
+  }
 }
 
 async function getPendingNonce(
@@ -491,6 +649,7 @@ async function fetchWalletNfts(address: `0x${string}`, collectionAddress?: strin
 
   let cursor: string | null = null;
   const allItems: any[] = [];
+  const normalizedCollection = collectionAddress?.toLowerCase();
 
   do {
     const params = new URLSearchParams({
@@ -501,6 +660,7 @@ async function fetchWalletNfts(address: `0x${string}`, collectionAddress?: strin
       include_prices: "false",
       limit: PAGE_SIZE.toString(),
     });
+    if (normalizedCollection) params.append("token_addresses", normalizedCollection);
     if (cursor) params.append("cursor", cursor);
 
     const url = `https://deep-index.moralis.io/api/v2.2/${address}/nft?${params.toString()}`;
@@ -521,7 +681,6 @@ async function fetchWalletNfts(address: `0x${string}`, collectionAddress?: strin
     cursor = data?.cursor || null;
   } while (cursor && allItems.length < MAX_ITEMS);
 
-  const normalizedCollection = collectionAddress?.toLowerCase();
   const filteredItems = normalizedCollection
     ? allItems.filter(
         (item) =>
@@ -756,6 +915,13 @@ const ClimateAgentPage = () => {
         "How we can start?",
     },
   ]);
+  const [showStakePendingToast, setShowStakePendingToast] = useState(false);
+  const [stakeProgress, setStakeProgress] = useState({ current: 0, total: 0 });
+  const [stakePendingType, setStakePendingType] = useState<"stake" | "unstake">(
+    "stake",
+  );
+  const [selectedStakeIds, setSelectedStakeIds] = useState<string[]>([]);
+  const [stakeSelectionMessageId, setStakeSelectionMessageId] = useState<string | null>(null);
 
   const messageIdRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -911,6 +1077,14 @@ const ClimateAgentPage = () => {
       const localEarnings = parseEarningsLocal(text);
       if (localEarnings) {
         return { reply: json.reply, intent: localEarnings };
+      }
+      const localStake = parseStakeLocal(text);
+      if (localStake) {
+        return { reply: json.reply, intent: localStake };
+      }
+      const localUnstake = parseUnstakeLocal(text);
+      if (localUnstake) {
+        return { reply: json.reply, intent: localUnstake };
       }
       const localBuy = parseBuyPlotLocal(text);
       if (localBuy) {
@@ -1223,9 +1397,232 @@ const ClimateAgentPage = () => {
         return;
       }
 
+      if (intent.type === "stake") {
+        updateMessage(actionId, {
+          content: "Preparing to stake your land plots...",
+          status: "pending",
+        });
+
+        if (!address) {
+          updateMessage(actionId, {
+            content: "Please connect a wallet first.",
+            status: "error",
+          });
+          return;
+        }
+
+        const isOnBase = await ensureBaseChain();
+        if (!isOnBase) {
+          updateMessage(actionId, {
+            content: "Please switch your wallet network to Base (chainId 8453) and try again.",
+            status: "error",
+          });
+          return;
+        }
+
+        let tokenIds: number[] = [];
+        if (intent.stakeAll) {
+          const data = await fetchWalletNfts(
+            address as `0x${string}`,
+            nftInfo.address,
+          );
+          const items = Array.isArray(data?.items) ? data.items : [];
+          tokenIds = items
+            .map((item: any) => Number(item?.token_id))
+            .filter((id: number) => Number.isFinite(id) && id > 0);
+        } else if (intent.tokenIds?.length) {
+          tokenIds = intent.tokenIds;
+        }
+
+        if (intent.tier) {
+          tokenIds = tokenIds.filter((id) => {
+            const pool = getPoolForTokenId(id);
+            return pool?.name === intent.tier;
+          });
+        }
+
+        if (tokenIds.length === 0) {
+          const data = await fetchWalletNfts(
+            address as `0x${string}`,
+            nftInfo.address,
+          );
+          const items = Array.isArray(data?.items) ? data.items : [];
+          const ownedIds = items
+            .map((item: any) => Number(item?.token_id))
+            .filter((id: number) => Number.isFinite(id) && id > 0);
+          const [legendaryIds, premiumIds, standardIds] = await Promise.all([
+            getStakedTokenIds(
+              walletClient,
+              LEGENDARY_POOL_ADDRESS as `0x${string}`,
+              address as `0x${string}`,
+            ),
+            getStakedTokenIds(
+              walletClient,
+              PREMIUM_POOL_ADDRESS as `0x${string}`,
+              address as `0x${string}`,
+            ),
+            getStakedTokenIds(
+              walletClient,
+              STANDARD_POOL_ADDRESS as `0x${string}`,
+              address as `0x${string}`,
+            ),
+          ]);
+          const stakedSet = new Set([
+            ...legendaryIds,
+            ...premiumIds,
+            ...standardIds,
+          ]);
+          const availableIds = ownedIds.filter((id) => !stakedSet.has(id));
+
+          if (availableIds.length === 0) {
+            updateMessage(actionId, {
+              content: "No available land plots found to stake.",
+              status: "error",
+            });
+            return;
+          }
+
+          const selectableCards = availableIds.map((id, index) => {
+            let placeholder = "/assets/images/apps/100m2v1.jpg";
+            if (id >= 1 && id <= 400) placeholder = "/assets/images/apps/1000m2v1.jpg";
+            else if (id >= 401 && id <= 1200) placeholder = "/assets/images/apps/500m2v1.jpg";
+            return {
+              id: `available-${id}-${index}`,
+              name: `Tokenized Landplot #${id}`,
+              tokenId: String(id),
+              image: placeholder,
+              collectionName: "Tokenized Landplot",
+              status: "available" as const,
+            };
+          });
+
+          updateMessage(actionId, {
+            content: "Select the land plots you want to stake, then confirm.",
+            status: "success",
+            nfts: selectableCards,
+            selectableNfts: true,
+          });
+          setSelectedStakeIds([]);
+          setStakeSelectionMessageId(actionId);
+          return;
+        }
+
+        await stakeTokenIds(tokenIds, actionId);
+        return;
+      }
+
+      if (intent.type === "unstake") {
+        updateMessage(actionId, {
+          content: "Preparing to unstake your land plots...",
+          status: "pending",
+        });
+
+        if (!address) {
+          updateMessage(actionId, {
+            content: "Please connect a wallet first.",
+            status: "error",
+          });
+          return;
+        }
+
+        const isOnBase = await ensureBaseChain();
+        if (!isOnBase) {
+          updateMessage(actionId, {
+            content: "Please switch your wallet network to Base (chainId 8453) and try again.",
+            status: "error",
+          });
+          return;
+        }
+
+        const hasGas = await checkGasBalance(address as `0x${string}`);
+        if (!hasGas) {
+          updateMessage(actionId, {
+            content: "Insufficient funds for gas fee. Please fund your wallet with ETH.",
+            status: "error",
+          });
+          return;
+        }
+
+        let tokenIds: number[] = [];
+        if (intent.unstakeAll) {
+          const [legendaryIds, premiumIds, standardIds] = await Promise.all([
+            getStakedTokenIds(
+              walletClient,
+              LEGENDARY_POOL_ADDRESS as `0x${string}`,
+              address as `0x${string}`,
+            ),
+            getStakedTokenIds(
+              walletClient,
+              PREMIUM_POOL_ADDRESS as `0x${string}`,
+              address as `0x${string}`,
+            ),
+            getStakedTokenIds(
+              walletClient,
+              STANDARD_POOL_ADDRESS as `0x${string}`,
+              address as `0x${string}`,
+            ),
+          ]);
+          tokenIds = [...legendaryIds, ...premiumIds, ...standardIds];
+        } else if (intent.tokenIds?.length) {
+          tokenIds = intent.tokenIds;
+        }
+
+        if (intent.tier) {
+          tokenIds = tokenIds.filter((id) => {
+            const pool = getPoolForTokenId(id);
+            return pool?.name === intent.tier;
+          });
+        }
+
+        if (tokenIds.length === 0) {
+          updateMessage(actionId, {
+            content: "No matching staked land plots found to unstake.",
+            status: "error",
+          });
+          return;
+        }
+
+        setStakePendingType("unstake");
+        setStakeProgress({ current: 0, total: tokenIds.length });
+        setShowStakePendingToast(true);
+
+        const byPool = new Map<string, bigint[]>();
+        for (const id of tokenIds) {
+          const pool = getPoolForTokenId(id);
+          if (!pool) continue;
+          if (!byPool.has(pool.address)) byPool.set(pool.address, []);
+          byPool.get(pool.address)?.push(BigInt(id));
+        }
+
+        const unstakeIface = new ethers.Interface([
+          "function unstake(uint256[] _tokenIds)",
+        ]);
+
+        let processedCount = 0;
+        for (const [poolAddress, ids] of Array.from(byPool.entries())) {
+          if (!ids.length) continue;
+          const unstakeData = unstakeIface.encodeFunctionData("unstake", [ids]) as `0x${string}`;
+          await sendTx({
+            to: poolAddress,
+            data: unstakeData,
+            value: BigInt(0),
+          });
+          processedCount += ids.length;
+          setStakeProgress({ current: processedCount, total: tokenIds.length });
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+
+        setShowStakePendingToast(false);
+        updateMessage(actionId, {
+          content: `Unstaked ${tokenIds.length} land plot(s) successfully.`,
+          status: "success",
+        });
+        return;
+      }
+
       if (intent.type === "nfts") {
         updateMessage(actionId, {
-          content: "Checking your Base NFTs...",
+          content: "Checking your land plots on Base...",
           status: "pending",
         });
 
@@ -1254,11 +1651,36 @@ const ClimateAgentPage = () => {
 
         if (items.length === 0) {
           updateMessage(actionId, {
-            content: "No NFTs found for your wallet on Base.",
+            content:
+              "No land plots found for this wallet in the landplot collection. " +
+              "If you just minted, wait a minute for indexing or confirm you're connected to the right wallet.",
             status: "success",
           });
           return;
         }
+
+        const [legendaryIds, premiumIds, standardIds] = await Promise.all([
+          getStakedTokenIds(
+            walletClient,
+            LEGENDARY_POOL_ADDRESS as `0x${string}`,
+            address as `0x${string}`,
+          ),
+          getStakedTokenIds(
+            walletClient,
+            PREMIUM_POOL_ADDRESS as `0x${string}`,
+            address as `0x${string}`,
+          ),
+          getStakedTokenIds(
+            walletClient,
+            STANDARD_POOL_ADDRESS as `0x${string}`,
+            address as `0x${string}`,
+          ),
+        ]);
+        const stakedSet = new Set([
+          ...legendaryIds,
+          ...premiumIds,
+          ...standardIds,
+        ]);
 
         const nftCards = items.map((nft: any, index: number) => {
           const tokenId = nft.token_id?.toString?.() || "0";
@@ -1279,15 +1701,28 @@ const ClimateAgentPage = () => {
             tokenId,
             image: placeholder,
             collectionName,
+            status: (stakedSet.has(tokenNumber) ? "staked" : "available") as
+              | "staked"
+              | "available",
           };
         });
 
+        const wantsStaked = /(staked|already staked)/i.test(trimmed);
+        const wantsAvailable = /(available|unstaked|not staked)/i.test(trimmed);
+        const filteredCards = wantsStaked
+          ? nftCards.filter((card) => card.status === "staked")
+          : wantsAvailable
+            ? nftCards.filter((card) => card.status === "available")
+            : nftCards;
+
         updateMessage(actionId, {
-          content: data.truncated
-            ? `Found ${items.length}+ NFT(s). Showing the first ${items.length}.`
-            : `Found ${items.length} NFT(s).`,
+          content:
+            `Total plots: ${nftCards.length}. ` +
+            `Available: ${nftCards.filter((card) => card.status === "available").length}. ` +
+            `Staked: ${nftCards.filter((card) => card.status === "staked").length}.` +
+            (data.truncated ? " Showing first 200." : ""),
           status: "success",
-          nfts: nftCards,
+          nfts: filteredCards,
           nftTruncated: data.truncated,
         });
         return;
@@ -1660,6 +2095,94 @@ const ClimateAgentPage = () => {
     await submitMessage(input);
   };
 
+  const toggleStakeSelection = (tokenId: string) => {
+    setSelectedStakeIds((prev) =>
+      prev.includes(tokenId) ? prev.filter((id) => id !== tokenId) : [...prev, tokenId],
+    );
+  };
+
+  const stakeTokenIds = async (tokenIds: number[], actionId?: string) => {
+    if (tokenIds.length === 0) return;
+    setStakePendingType("stake");
+    setStakeProgress({ current: 0, total: tokenIds.length });
+    setShowStakePendingToast(true);
+
+    const byPool = new Map<string, bigint[]>();
+    for (const id of tokenIds) {
+      const pool = getPoolForTokenId(id);
+      if (!pool) continue;
+      if (!byPool.has(pool.address)) byPool.set(pool.address, []);
+      byPool.get(pool.address)?.push(BigInt(id));
+    }
+
+    const approvalIface = new ethers.Interface([
+      "function setApprovalForAll(address operator, bool approved)",
+    ]);
+    const stakeIface = new ethers.Interface(["function stake(uint256[] _tokenIds)"]);
+
+    let processedCount = 0;
+    for (const [poolAddress, ids] of Array.from(byPool.entries())) {
+      if (!ids.length) continue;
+      const approved = await isApprovedForAll(
+        walletClient,
+        address as `0x${string}`,
+        poolAddress as `0x${string}`,
+      );
+
+      if (!approved) {
+        const approvalData = approvalIface.encodeFunctionData("setApprovalForAll", [
+          poolAddress,
+          true,
+        ]) as `0x${string}`;
+        await sendTx({
+          to: NFT_COLLECTION_ADDRESS,
+          data: approvalData,
+          value: BigInt(0),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+
+      const stakeData = stakeIface.encodeFunctionData("stake", [ids]) as `0x${string}`;
+      await sendTx({
+        to: poolAddress,
+        data: stakeData,
+        value: BigInt(0),
+      });
+      processedCount += ids.length;
+      setStakeProgress({ current: processedCount, total: tokenIds.length });
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+
+    setShowStakePendingToast(false);
+    if (actionId) {
+      updateMessage(actionId, {
+        content: `Staked ${tokenIds.length} land plot(s) successfully.`,
+        status: "success",
+        selectableNfts: false,
+      });
+    } else {
+      addMessage({
+        role: "assistant",
+        content: `Staked ${tokenIds.length} land plot(s) successfully.`,
+        status: "success",
+      });
+    }
+  };
+
+  const confirmStakeSelection = async () => {
+    if (!stakeSelectionMessageId) return;
+    const tokenIds = selectedStakeIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+    if (tokenIds.length === 0) return;
+    updateMessage(stakeSelectionMessageId, {
+      content: "Staking selected land plots...",
+      status: "pending",
+      selectableNfts: false,
+    });
+    setSelectedStakeIds([]);
+    setStakeSelectionMessageId(null);
+    await stakeTokenIds(tokenIds, stakeSelectionMessageId);
+  };
+
   const handleQuickPrompt = async (prompt: string) => {
     if (isWorking) return;
     setInput(prompt);
@@ -1756,7 +2279,16 @@ const ClimateAgentPage = () => {
                                 {message.nfts.map((nft) => (
                                   <div
                                     key={nft.id}
-                                    className="rounded-lg border border-defaultborder/40 bg-white/80 dark:bg-bodybg p-2 shadow-sm"
+                                    className={`rounded-lg border border-defaultborder/40 bg-white/80 dark:bg-bodybg p-2 shadow-sm ${
+                                      message.selectableNfts && selectedStakeIds.includes(nft.tokenId)
+                                        ? "ring-2 ring-secondary"
+                                        : ""
+                                    }`}
+                                    onClick={
+                                      message.selectableNfts
+                                        ? () => toggleStakeSelection(nft.tokenId)
+                                        : undefined
+                                    }
                                   >
                                     <div className="aspect-[4/5] w-full overflow-hidden rounded-md bg-slate-100 dark:bg-bodybg">
                                       {nft.image ? (
@@ -1784,10 +2316,34 @@ const ClimateAgentPage = () => {
                                       <div className="text-[10px] text-defaulttextcolor/60">
                                         #{nft.tokenId}
                                       </div>
+                                      {nft.status && (
+                                        <div className="text-[10px] text-defaulttextcolor/60">
+                                          Status: {nft.status}
+                                        </div>
+                                      )}
                                     </div>
+                                    {message.selectableNfts && (
+                                      <div className="mt-2 text-[11px] text-secondary font-semibold">
+                                        {selectedStakeIds.includes(nft.tokenId)
+                                          ? "Selected"
+                                          : "Tap to select"}
+                                      </div>
+                                    )}
                                   </div>
                                 ))}
                               </div>
+                              {message.selectableNfts && (
+                                <div className="mt-3 flex items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={selectedStakeIds.length === 0}
+                                    onClick={confirmStakeSelection}
+                                    className="px-4 py-2 rounded-md bg-secondary text-white text-sm font-medium hover:bg-secondary/90 transition disabled:opacity-60"
+                                  >
+                                    Stake Selected
+                                  </button>
+                                </div>
+                              )}
                               {message.nftTruncated && (
                                 <div className="mt-2 text-[11px] text-defaulttextcolor/60">
                                   Showing the first 200 items to keep the UI fast.
@@ -1865,6 +2421,40 @@ const ClimateAgentPage = () => {
           </div>
         </div>
       </div>
+
+      {showStakePendingToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 md:left-auto md:right-6 md:translate-x-0 max-w-[90vw] md:max-w-none">
+          <div
+            role="alert"
+            className="bg-camel shadow-lg rounded-md w-full max-w-2xl min-w-[320px] px-5 py-4"
+          >
+            <div className="flex items-center gap-4 w-full">
+              <div className="flex-shrink-0">
+                <img
+                  src={
+                    stakePendingType === "stake"
+                      ? "/assets/images/svg/Staked.svg"
+                      : "/assets/images/svg/Unstaked.svg"
+                  }
+                  alt={stakePendingType === "stake" ? "Staking" : "Unstaking"}
+                  width={30}
+                  height={30}
+                  className="rounded"
+                />
+              </div>
+              <div className="flex-1 text-center px-2">
+                <strong className="text-sm font-bold break-words">
+                  Pending {stakePendingType === "stake" ? "Staking" : "Unstaking"}:{" "}
+                  {stakeProgress.current}/{stakeProgress.total}
+                </strong>
+              </div>
+              <div className="flex-shrink-0">
+                <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary border-t-transparent"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </Fragment>
   );
 };
