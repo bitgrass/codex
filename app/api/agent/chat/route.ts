@@ -56,6 +56,19 @@ const ParsedIntentSchema = z.discriminatedUnion("type", [
     chainId: z.literal(8453),
   }),
   z.object({
+    type: z.literal("leaderboard_rank"),
+    chainId: z.literal(8453),
+  }),
+  z.object({
+    type: z.literal("leaderboard_top"),
+    count: z.number().min(1).max(50),
+    chainId: z.literal(8453),
+  }),
+  z.object({
+    type: z.literal("btg_claim"),
+    chainId: z.literal(8453),
+  }),
+  z.object({
     type: z.literal("stake"),
     tokenIds: z.array(z.number()).optional(),
     stakeAll: z.boolean().optional(),
@@ -233,6 +246,52 @@ function parseClaimRegex(message: string) {
   }
 
   return { type: "claim_bco2" as const, chainId: 8453 as const };
+}
+
+function parseLeaderboardRankRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  const match = normalized.match(
+    /(leaderboard|rank|ranking|position).*(me|my|mine)?/i,
+  );
+
+  if (!match) {
+    return { type: "unknown" as const, reason: "No leaderboard rank command detected." };
+  }
+
+  return { type: "leaderboard_rank" as const, chainId: 8453 as const };
+}
+
+function parseLeaderboardTopRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  const match = normalized.match(/top\s*(\d+)\s*(leaderboard|ranks|ranking|rankings|users)?/i);
+  if (!match) {
+    return { type: "unknown" as const, reason: "No leaderboard top command detected." };
+  }
+  const count = Number(match[1]);
+  if (!Number.isFinite(count) || count <= 0) {
+    return { type: "unknown" as const, reason: "Invalid top count." };
+  }
+  return {
+    type: "leaderboard_top" as const,
+    count: Math.min(50, Math.max(1, Math.floor(count))),
+    chainId: 8453 as const,
+  };
+}
+
+function parseBtgClaimRegex(message: string) {
+  const normalized = message.trim().toLowerCase();
+  if (/(bco2|bc02)/i.test(normalized)) {
+    return { type: "unknown" as const, reason: "BCO2 mention detected." };
+  }
+  const match = normalized.match(
+    /(btg).*(claim|claimed|rewards?|earnings?|balance|amount)|((claim|claimed).*(btg))/i,
+  );
+
+  if (!match) {
+    return { type: "unknown" as const, reason: "No BTG claim command detected." };
+  }
+
+  return { type: "btg_claim" as const, chainId: 8453 as const };
 }
 
 function parseStakeRegex(message: string) {
@@ -422,6 +481,28 @@ export async function POST(request: Request) {
         ? "Got it — claiming your BCO2 rewards now."
         : "Please connect your wallet first so I can claim your BCO2 rewards.";
       return Response.json({ reply, intent: claim });
+    }
+
+    const leaderboardTop = parseLeaderboardTopRegex(message);
+    if (leaderboardTop.type !== "unknown") {
+      const reply = "Got it — fetching the top leaderboard now.";
+      return Response.json({ reply, intent: leaderboardTop });
+    }
+
+    const leaderboardRank = parseLeaderboardRankRegex(message);
+    if (leaderboardRank.type !== "unknown") {
+      const reply = walletConnected
+        ? "Got it — checking your leaderboard rank now."
+        : "Please connect your wallet first so I can check your leaderboard rank.";
+      return Response.json({ reply, intent: leaderboardRank });
+    }
+
+    const btgClaim = parseBtgClaimRegex(message);
+    if (btgClaim.type !== "unknown") {
+      const reply = walletConnected
+        ? "Got it — checking your claimed BTG amount now."
+        : "Please connect your wallet first so I can check your claimed BTG amount.";
+      return Response.json({ reply, intent: btgClaim });
     }
 
     const historyText = history

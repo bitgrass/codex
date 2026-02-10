@@ -70,6 +70,7 @@ const PREMIUM_POOL_ADDRESS = "0xCe6409e0146ffFa252Dbb3105c1D5285c73b4274";
 const STANDARD_POOL_ADDRESS = "0xE70886Db1d0F52B3B8Ced3538E048d8263C16302";
 const REWARD_TOKEN_ADDRESS = "0x20429F731096e359910921994A267d32ef576720";
 const NFT_COLLECTION_ADDRESS = nftInfo.address;
+const LEADERBOARD_API = "https://durable-object-starter.bitgrass-crypto.workers.dev";
 
 type ParsedIntent =
   | {
@@ -89,6 +90,19 @@ type ParsedIntent =
   }
   | {
     type: "claim_bco2";
+    chainId: 8453;
+  }
+  | {
+    type: "leaderboard_rank";
+    chainId: 8453;
+  }
+  | {
+    type: "leaderboard_top";
+    count: number;
+    chainId: 8453;
+  }
+  | {
+    type: "btg_claim";
     chainId: 8453;
   }
   | {
@@ -223,6 +237,36 @@ function parseClaimLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
   if (/(claim|collect|redeem|withdraw).*(bco2|bc02|rewards?)/i.test(normalized)) {
     return { type: "claim_bco2", chainId: 8453 };
+  }
+  return null;
+}
+
+function parseLeaderboardLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  if (/(leaderboard|rank|ranking|position)/i.test(normalized)) {
+    return { type: "leaderboard_rank", chainId: 8453 };
+  }
+  return null;
+}
+
+function parseLeaderboardTopLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  const match = normalized.match(/top\s*(\d+)\s*(leaderboard|ranks|ranking|rankings|users)?/i);
+  if (!match) return null;
+  const count = Number(match[1]);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  return {
+    type: "leaderboard_top",
+    count: Math.min(50, Math.max(1, Math.floor(count))),
+    chainId: 8453,
+  };
+}
+
+function parseBtgClaimLocal(text: string): ParsedIntent | null {
+  const normalized = text.trim().toLowerCase();
+  if (/(bco2|bc02)/i.test(normalized)) return null;
+  if (/(btg).*(claim|claimed|rewards?|earnings?|balance|amount)|((claim|claimed).*(btg))/i.test(normalized)) {
+    return { type: "btg_claim", chainId: 8453 };
   }
   return null;
 }
@@ -419,6 +463,26 @@ async function getStakedTokenIds(
   } catch {
     return [];
   }
+}
+
+async function fetchLeaderboardRow(userAddress: string) {
+  const res = await fetch(`${LEADERBOARD_API}/leaderboard`, {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Leaderboard fetch failed (${res.status})`);
+  }
+  const body = await res.json();
+  const ranked = Array.isArray(body?.result) ? body.result : [];
+  const lower = userAddress.toLowerCase();
+  const index = ranked.findIndex((row: any) => (row.address || "").toLowerCase() === lower);
+  const row = index >= 0 ? ranked[index] : null;
+  return { row, index, total: ranked.length };
+}
+
+function formatLeaderboardAddress(address: string) {
+  if (!address || address.length < 10) return address || "Unknown";
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 async function fetchTotalEarned(address: `0x${string}`) {
@@ -1094,6 +1158,18 @@ const ClimateAgentPage = () => {
       if (localClaim) {
         return { reply: json.reply, intent: localClaim };
       }
+      const localLeaderboardTop = parseLeaderboardTopLocal(text);
+      if (localLeaderboardTop) {
+        return { reply: json.reply, intent: localLeaderboardTop };
+      }
+      const localLeaderboard = parseLeaderboardLocal(text);
+      if (localLeaderboard) {
+        return { reply: json.reply, intent: localLeaderboard };
+      }
+      const localBtgClaim = parseBtgClaimLocal(text);
+      if (localBtgClaim) {
+        return { reply: json.reply, intent: localBtgClaim };
+      }
       const localStake = parseStakeLocal(text);
       if (localStake) {
         return { reply: json.reply, intent: localStake };
@@ -1472,6 +1548,9 @@ const ClimateAgentPage = () => {
           return;
         }
 
+        const totalClaimed = pools.reduce((sum, pool) => sum + pool.rewards, BigInt(0));
+        const totalClaimedReadable = formatUnits(totalClaimed, 18);
+
         const claimIface = new ethers.Interface([
           "function claimRewards()",
         ]);
@@ -1487,9 +1566,127 @@ const ClimateAgentPage = () => {
         }
 
         updateMessage(actionId, {
-          content: "Claimed BCO2 rewards successfully.",
+          content: `Claimed <strong>${totalClaimedReadable} BCO2</strong> successfully.`,
           status: "success",
         });
+        return;
+      }
+
+      if (intent.type === "leaderboard_top") {
+        const topCount = Math.max(1, Math.min(50, intent.count || 10));
+        updateMessage(actionId, {
+          content: `Fetching top ${topCount} leaderboard...`,
+          status: "pending",
+        });
+
+        try {
+          const res = await fetch(`${LEADERBOARD_API}/leaderboard`, {
+            headers: { accept: "application/json" },
+          });
+          if (!res.ok) throw new Error("Leaderboard fetch failed.");
+          const body = await res.json();
+          const ranked = Array.isArray(body?.result) ? body.result : [];
+          if (!ranked.length) {
+            updateMessage(actionId, {
+              content: "Leaderboard data is empty right now.",
+              status: "error",
+            });
+            return;
+          }
+
+          const top = ranked.slice(0, topCount);
+          const lines = top.map((row: any, idx: number) => {
+            const addr = formatLeaderboardAddress(String(row?.address || ""));
+            const legendary = Number(row?.legendary || 0);
+            const premium = Number(row?.premium || 0);
+            const standard = Number(row?.standard || 0);
+            const btgClaim = Number(row?.btg_claim || 0);
+            return (
+              `${idx + 1}) ${addr} ` +
+              `{{ICON_LEGENDARY}}${legendary} ` +
+              `{{ICON_PREMIUM}}${premium} ` +
+              `{{ICON_STANDARD}}${standard} ` +
+              `${btgClaim} BTG {{ICON_BTG}}`
+            );
+          });
+
+          updateMessage(actionId, {
+            content: `Top ${topCount} in Leaderboard:\n${lines.join("\n")}`,
+            status: "success",
+          });
+        } catch (error: any) {
+          updateMessage(actionId, {
+            content: "Unable to fetch leaderboard data right now. Please try again in a moment.",
+            status: "error",
+          });
+        }
+        return;
+      }
+
+      if (intent.type === "leaderboard_rank" || intent.type === "btg_claim") {
+        updateMessage(actionId, {
+          content:
+            intent.type === "leaderboard_rank"
+              ? "Checking your leaderboard rank..."
+              : "Checking your claimed BTG amount...",
+          status: "pending",
+        });
+
+        if (!address) {
+          updateMessage(actionId, {
+            content: "Please connect a wallet first.",
+            status: "error",
+          });
+          return;
+        }
+
+        try {
+          const { row, index, total } = await fetchLeaderboardRow(address);
+          if (!row || index < 0) {
+            updateMessage(actionId, {
+              content:
+                "Your wallet was not found in the leaderboard. " +
+                "Make sure you hold land plots and try again.",
+              status: "error",
+            });
+            return;
+          }
+
+          const rank = `#${String(index + 1).padStart(4, "0")}`;
+          const btgClaim = Number(row?.btg_claim || 0);
+          const legendary = Number(row?.legendary || 0);
+          const premium = Number(row?.premium || 0);
+          const standard = Number(row?.standard || 0);
+
+          if (intent.type === "leaderboard_rank") {
+            updateMessage(actionId, {
+              content:
+                `Your leaderboard rank is <strong>${rank}</strong> out of <strong>${total}</strong>.\n` +
+                 `\n`+ 
+                `{{ICON_LEGENDARY}}Legendary Plots : ${legendary}\n` +
+                `{{ICON_PREMIUM}}Premium Plots : ${premium}\n` +
+                `{{ICON_STANDARD}}Standard Plots : ${standard}\n` +
+                `\n`+ 
+                `Claimable BTG : <strong>${btgClaim} BTG</strong> {{ICON_BTG}}`,
+              status: "success",
+            });
+          } else {
+            updateMessage(actionId, {
+              content:
+                `Your claimable BTG is <strong>${btgClaim} BTG</strong> {{ICON_BTG}}\n` +
+                 `\n`+ 
+                `{{ICON_LEGENDARY}}Legendary Plots : ${legendary}\n` +
+                `{{ICON_PREMIUM}}Premium Plots : ${premium}\n` +
+                `{{ICON_STANDARD}}Standard Plots : ${standard}`,
+              status: "success",
+            });
+          }
+        } catch (error: any) {
+          updateMessage(actionId, {
+            content: "Unable to fetch leaderboard data right now. Please try again in a moment.",
+            status: "error",
+          });
+        }
         return;
       }
 
