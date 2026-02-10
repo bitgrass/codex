@@ -209,17 +209,16 @@ export const MenuItems: any = [
 
   },
   {
-    title: "Retirements",
-    badgetxt: badge4,
-    icon: ErrorIcon,
-    path: "",
+    title: "Climate Agent",
+    icon: ClimateAgentIcon,
+    badgetxt: badgeAI,
+    path: "/climate-agent",
     type: "link",
     active: false,
     selected: false,
     dirchange: false,
-
-
   },
+  
   {
     title: "Calculator",
     icon: Utilities,
@@ -233,20 +232,8 @@ export const MenuItems: any = [
 
   },
 
-  {
-    menutitle: "AI POWERED",
-  },
 
-  {
-    title: "Climate Agent",
-    icon: ClimateAgentIcon,
-    badgetxt: badgeAI,
-    path: "/climate-agent",
-    type: "link",
-    active: false,
-    selected: false,
-    dirchange: false,
-  },
+
 
 
 ];

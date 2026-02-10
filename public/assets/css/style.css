@@ -160,8 +160,8 @@ Toast
 /* CUSTOM STYLES */
 .climate-agent .agent-face {
   position: relative;
-  width: 100px;
-  height: 100px;
+  width: 50px;
+  height: 50px;
   border-radius: 0;
   margin: 0 auto;
   box-shadow: none;
@@ -177,24 +177,24 @@ Toast
   animation: climatePixelFloatA 3.2s ease-in-out infinite;
 }
 .climate-agent .agent-face .agent-pixel:nth-child(1) {
-  left: 46px;
-  top: 44px;
+  left: 30px;
+  top: 4px;
   width: 20px;
   height: 20px;
   animation-name: climatePixelFloatA;
   animation-delay: 0s;
 }
 .climate-agent .agent-face .agent-pixel:nth-child(2) {
-  left: 68px;
-  top: 64px;
+  left: 6px;
+  top: 6px;
   width: 14px;
   height: 14px;
   animation-name: climatePixelFloatB;
   animation-delay: 0.2s;
 }
 .climate-agent .agent-face .agent-pixel:nth-child(3) {
-  left: 54px;
-  top: 82px;
+  left: 5px;
+  top: 28px;
   width: 10px;
   height: 10px;
   animation-name: climatePixelFloatC;

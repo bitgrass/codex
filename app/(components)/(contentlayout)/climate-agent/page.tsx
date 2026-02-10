@@ -39,8 +39,6 @@ const BASE_CHAIN_ID = 8453;
 const QUICK_PROMPTS = [
   "Check my wallet Balance",
   "Swap 0.0001 ETH to USDC",
-  "Send 0.0001 ETH to 0x...",
-  "What is Carbon Credit?",
   "Check my landplots",
   "Buy Standard 100m2 plot",
 ];
@@ -1399,16 +1397,16 @@ const ClimateAgentPage = () => {
       <div className="container climate-agent">
         <div className="mt-6 flex justify-center">
           <div className="w-full max-w-4xl">
-              <div className="" style={{padding : 0}}>
-                <div className="box-body flex flex-col items-center text-center">
+              <div className="mt-3" style={{padding : 0}}>
+                <div className="box-body flex flex-col items-center text-center" style={{padding : 0}}>
                   <div className="agent-face" aria-hidden="true">
                     <span className="agent-pixel" />
                     <span className="agent-pixel" />
                     <span className="agent-pixel" />
                   </div>
-                <div className="mt-4">
+                <div className="mt-1">
                   <div className="text-3xl dark:text-white font-semibold">Climate Agent</div>
-                  <div className="text-sm text-defaulttextcolor/70">Your eco-agent</div>
+                  <div className="text-sm text-defaulttextcolor/70">Your ai-assistant</div>
                 </div>
 
                 <div className="mt-4 flex flex-col items-center gap-3">
@@ -1422,7 +1420,7 @@ const ClimateAgentPage = () => {
                   )}
                 </div>
 
-                <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-sm text-defaulttextcolor/70">
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-sm text-defaulttextcolor/70">
                   {QUICK_PROMPTS.map((prompt) => (
                     <button
                       key={prompt}
