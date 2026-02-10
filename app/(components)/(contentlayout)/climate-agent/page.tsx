@@ -14,6 +14,8 @@ import {
   SEADROP_CONDUIT_INFO,
   SeaDropABIData,
   nftInfo,
+  btgInfo,
+  EthInfo,
 } from "@/shared/data/tokens/data";
 import { IconBoxPadding } from "@/public/assets/iconfonts/tabler-icons/icons-react";
 
@@ -137,6 +139,10 @@ function formatAmountForSwap(value: bigint, decimals: number) {
   const raw = formatUnits(value, decimals);
   const trimmed = raw.replace(/\.?0+$/, "");
   return trimmed.length ? trimmed : "0";
+}
+
+function formatUsd(value: number) {
+  return value.toFixed(2);
 }
 
 function parseTransferLocal(text: string): ParsedIntent | null {
@@ -357,6 +363,30 @@ async function fetchTotalEarned(address: `0x${string}`) {
     premium: formatUnits(premiumTotal, 18),
     standard: formatUnits(standardTotal, 18),
   };
+}
+
+async function fetchTokenPriceUsd(tokenAddress: string, chain: "base" | "eth") {
+  const apiKey = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
+  if (!apiKey) {
+    throw new Error("Moralis API key is not configured.");
+  }
+
+  const response = await fetch(
+    `https://deep-index.moralis.io/api/v2.2/erc20/${tokenAddress}/price?chain=${chain}&include=percent_change`,
+    {
+      headers: {
+        accept: "application/json",
+        "X-API-Key": apiKey,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch token price.");
+  }
+
+  const data = await response.json();
+  return Number(data?.usdPrice || 0);
 }
 
 async function getPendingNonce(
@@ -776,6 +806,18 @@ const ClimateAgentPage = () => {
       '<img src="/assets/images/svg/EarnBo2.svg" alt="Earn BCO2" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
     );
     return withEarnIcon
+      .replace(
+        /\{\{ICON_ETH\}\}/g,
+        '<img src="/assets/images/brand-logos/eth.png" alt="ETH" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      )
+      .replace(
+        /\{\{ICON_USDC\}\}/g,
+        '<img src="/assets/images/faces/usdc.png" alt="USDC" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      )
+      .replace(
+        /\{\{ICON_BTG\}\}/g,
+        '<img src="/assets/images/brand-logos/logo-btg.svg" alt="BTG" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      )
       .replace(/&lt;strong&gt;([\s\S]*?)&lt;\/strong&gt;/g, "<strong>$1</strong>")
       .replace(/\n/g, "<br />");
   };
@@ -1060,20 +1102,53 @@ const ClimateAgentPage = () => {
           return;
         }
 
-        const ethBalance = await getEthBalance(walletClient, address as `0x${string}`);
-        const usdcBalance = await getErc20Balance(
-          walletClient,
-          USDC_TOKEN.address as `0x${string}`,
-          address as `0x${string}`,
-        );
+        const [ethBalance, usdcBalance, btgBalance] = await Promise.all([
+          getEthBalance(walletClient, address as `0x${string}`),
+          getErc20Balance(
+            walletClient,
+            USDC_TOKEN.address as `0x${string}`,
+            address as `0x${string}`,
+          ),
+          getErc20Balance(
+            walletClient,
+            btgInfo.address as `0x${string}`,
+            address as `0x${string}`,
+          ),
+        ]);
 
-        const ethReadable =
-          ethBalance === null ? "Unknown" : `${formatUnits(ethBalance, 18)} ETH`;
-        const usdcReadable =
-          usdcBalance === null ? "Unknown" : `${formatUnits(usdcBalance, 6)} USDC`;
+        const ethValue =
+          ethBalance === null ? 0 : Number(formatUnits(ethBalance, 18));
+        const usdcValue =
+          usdcBalance === null ? 0 : Number(formatUnits(usdcBalance, 6));
+        const btgValue =
+          btgBalance === null ? 0 : Number(formatUnits(btgBalance, 18));
+
+        const ethReadable = ethValue === 0 ? "0" : ethValue.toFixed(6);
+        const usdcReadable = usdcValue === 0 ? "0" : usdcValue.toFixed(6);
+        const btgReadable = btgValue === 0 ? "0" : btgValue.toFixed(6);
+
+        let totalUsd = 0;
+        try {
+          const [ethPrice, usdcPrice, btgPrice] = await Promise.all([
+            fetchTokenPriceUsd(EthInfo.address, "eth"),
+            fetchTokenPriceUsd(USDC_TOKEN.address, "base"),
+            fetchTokenPriceUsd(btgInfo.address, "base"),
+          ]);
+          totalUsd =
+            Number(ethReadable) * ethPrice +
+            Number(usdcReadable) * usdcPrice +
+            Number(btgReadable) * btgPrice;
+        } catch {
+          totalUsd = 0;
+        }
 
         updateMessage(actionId, {
-          content: `Base balances — ETH: ${ethReadable}, USDC: ${usdcReadable}.`,
+          content:
+            `Your Total Balance on base : <strong>$${formatUsd(totalUsd)}</strong>\n` +
+            `\n` +
+            `{{ICON_ETH}}ETH : ${ethReadable}\n` +
+            `{{ICON_USDC}}USDC : ${usdcReadable}\n` +
+            `{{ICON_BTG}}BTG : ${btgReadable}`,
           status: "success",
         });
         return;
