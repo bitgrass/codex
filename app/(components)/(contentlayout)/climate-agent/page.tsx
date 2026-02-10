@@ -1606,7 +1606,7 @@ const ClimateAgentPage = () => {
               `{{ICON_LEGENDARY}}${legendary} ` +
               `{{ICON_PREMIUM}}${premium} ` +
               `{{ICON_STANDARD}}${standard} ` +
-              `${btgClaim} BTG {{ICON_BTG}}`
+              `${btgClaim} $BTG {{ICON_BTG}}`
             );
           });
 
@@ -1667,13 +1667,13 @@ const ClimateAgentPage = () => {
                 `{{ICON_PREMIUM}}Premium Plots : ${premium}\n` +
                 `{{ICON_STANDARD}}Standard Plots : ${standard}\n` +
                 `\n`+ 
-                `Claimable BTG : <strong>${btgClaim} BTG</strong> {{ICON_BTG}}`,
+                `Claimable $BTG : <strong>${btgClaim} $BTG</strong> {{ICON_BTG}}`,
               status: "success",
             });
           } else {
             updateMessage(actionId, {
               content:
-                `Your claimable BTG is <strong>${btgClaim} BTG</strong> {{ICON_BTG}}\n` +
+                `Your claimable $BTG is <strong>${btgClaim} $BTG</strong> {{ICON_BTG}}\n` +
                  `\n`+ 
                 `{{ICON_LEGENDARY}}Legendary Plots : ${legendary}\n` +
                 `{{ICON_PREMIUM}}Premium Plots : ${premium}\n` +
