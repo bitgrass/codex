@@ -623,22 +623,6 @@ async function isApprovedForAll(
   }
 }
 
-async function getPendingNonce(
-  walletClient: any,
-  account: `0x${string}`,
-): Promise<bigint | null> {
-  if (!walletClient?.request) return null;
-  try {
-    const hex = (await walletClient.request({
-      method: "eth_getTransactionCount",
-      params: [account, "pending"],
-    })) as string;
-    return BigInt(hex);
-  } catch {
-    return null;
-  }
-}
-
 async function waitForReceipt(
   walletClient: any,
   txHash: string,
@@ -655,6 +639,44 @@ async function waitForReceipt(
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
   return null;
+}
+
+async function getNonceCounts(
+  walletClient: any,
+  account: `0x${string}`,
+): Promise<{ latest: bigint; pending: bigint } | null> {
+  if (!walletClient?.request) return null;
+  try {
+    const [latestHex, pendingHex] = (await Promise.all([
+      walletClient.request({
+        method: "eth_getTransactionCount",
+        params: [account, "latest"],
+      }),
+      walletClient.request({
+        method: "eth_getTransactionCount",
+        params: [account, "pending"],
+      }),
+    ])) as [string, string];
+    return { latest: BigInt(latestHex), pending: BigInt(pendingHex) };
+  } catch {
+    return null;
+  }
+}
+
+async function waitForPendingToClear(
+  walletClient: any,
+  account: `0x${string}`,
+  timeoutMs = 60_000,
+  pollMs = 3_000,
+) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const counts = await getNonceCounts(walletClient, account);
+    if (!counts) return true;
+    if (counts.pending <= counts.latest) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return false;
 }
 
 async function prepareTransferTx(params: {
@@ -1284,6 +1306,15 @@ const ClimateAgentPage = () => {
     const trimmed = rawInput.trim();
     if (!trimmed || isWorking) return;
 
+    const looksLikeQuestion =
+      /\?\s*$/.test(trimmed) ||
+      /^(how|what|why|when|where|who|can|could|should|would|do|does|did|is|are|am|will|may|might)\b/i.test(
+        trimmed,
+      ) ||
+      /\b(how to|how do i|how can i|can you|could you|what is|what are|what's|explain|help me)\b/i.test(
+        trimmed,
+      );
+
     if (isListening && !options?.skipStop) stopListening(true);
 
     setInput("");
@@ -1325,16 +1356,28 @@ const ClimateAgentPage = () => {
     let actionId: string | null = null;
 
     try {
-      const agent = await interpret(trimmed, history);
+    const agent = await interpret(trimmed, history);
 
-      updateMessage(statusId, {
-        content: agent.reply,
-        status: undefined,
+    updateMessage(statusId, {
+      content: agent.reply,
+      status: undefined,
+    });
+
+    if (looksLikeQuestion) {
+      addMessage({
+        role: "assistant",
+        content:
+          "I can explain how to do that, but I won't execute transactions from a question. " +
+          "If you want me to proceed, give a direct command like: “Swap 10 USDC to ETH”, " +
+          "“Send 0.01 ETH to 0x...”, “Buy Standard 100m2 plot”, or “Claim BCO2”.",
+        status: "success",
       });
+      return;
+    }
 
-      if (agent.intent.type === "unknown") {
-        return;
-      }
+    if (agent.intent.type === "unknown") {
+      return;
+    }
 
       const intent = agent.intent;
 
@@ -2000,20 +2043,40 @@ const ClimateAgentPage = () => {
           };
         });
 
+        const ownedIdSet = new Set(
+          nftCards.map((card) => Number(card.tokenId)).filter((id) => Number.isFinite(id)),
+        );
+        const stakedOnlyCards = Array.from(stakedSet)
+          .filter((id) => !ownedIdSet.has(id))
+          .map((id, index) => {
+            let placeholder = "/assets/images/apps/100m2v1.jpg";
+            if (id >= 1 && id <= 400) placeholder = "/assets/images/apps/1000m2v1.jpg";
+            else if (id >= 401 && id <= 1200) placeholder = "/assets/images/apps/500m2v1.jpg";
+            return {
+              id: `staked-${id}-${index}`,
+              name: `Tokenized Landplot #${id}`,
+              tokenId: String(id),
+              image: placeholder,
+              collectionName: "Tokenized Landplot",
+              status: "staked" as const,
+            };
+          });
+        const allCards = [...nftCards, ...stakedOnlyCards];
+
         const wantsStaked = /(staked|already staked)/i.test(trimmed);
         const wantsAvailable = /(available|unstaked|not staked)/i.test(trimmed);
         const filteredCards = wantsStaked
-          ? nftCards.filter((card) => card.status === "staked")
+          ? allCards.filter((card) => card.status === "staked")
           : wantsAvailable
-            ? nftCards.filter((card) => card.status === "available")
-            : nftCards;
+            ? allCards.filter((card) => card.status === "available")
+            : allCards;
 
         updateMessage(actionId, {
           content:
-            `Total plots: ${nftCards.length}. ` +
-            `Available: ${nftCards.filter((card) => card.status === "available").length}. ` +
-            `Staked: ${nftCards.filter((card) => card.status === "staked").length}.` +
-            (data.truncated ? " Showing first 200." : ""),
+            `Total plots: ${allCards.length}\n` +
+            `Available: ${allCards.filter((card) => card.status === "available").length}\n` +
+            `Staked: ${allCards.filter((card) => card.status === "staked").length}` +
+            (data.truncated ? "\nShowing first 200." : ""),
           status: "success",
           nfts: filteredCards,
           nftTruncated: data.truncated,
@@ -2155,14 +2218,35 @@ const ClimateAgentPage = () => {
           status: "pending",
         });
 
+        const canProceed = await waitForPendingToClear(
+          walletClient,
+          address as `0x${string}`,
+        );
+        if (!canProceed) {
+          updateMessage(actionId, {
+            content:
+              "Your wallet still has a pending transaction. Please wait for it to confirm, then try again.",
+            status: "error",
+          });
+          return;
+        }
+
         // Approve if required (for ERC-20 sells).
         // OnchainKit can return an "empty" approveTransaction; only run if it has calldata.
         if (swapTransaction.approveTransaction?.data) {
           const approveTx = swapTransaction.approveTransaction;
-          const approveNonce = await getPendingNonce(
+          const canApprove = await waitForPendingToClear(
             walletClient,
             address as `0x${string}`,
           );
+          if (!canApprove) {
+            updateMessage(actionId, {
+              content:
+                "Your wallet still has a pending transaction. Please wait for it to confirm, then try again.",
+              status: "error",
+            });
+            return;
+          }
           const approveHash = await sendTx({
             to: approveTx.to,
             data: approveTx.data as `0x${string}`,
@@ -2170,13 +2254,23 @@ const ClimateAgentPage = () => {
             ...(approveTx.gas ? { gas: approveTx.gas } : {}),
             ...(approveTx.maxFeePerGas ? { maxFeePerGas: approveTx.maxFeePerGas } : {}),
             ...(approveTx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: approveTx.maxPriorityFeePerGas } : {}),
-            ...(typeof approveNonce === "bigint" ? { nonce: approveNonce } : {}),
           });
           await waitForReceipt(walletClient, approveHash);
         }
 
         const tx = swapTransaction.transaction;
-        const swapNonce = await getPendingNonce(walletClient, address as `0x${string}`);
+        const canSwap = await waitForPendingToClear(
+          walletClient,
+          address as `0x${string}`,
+        );
+        if (!canSwap) {
+          updateMessage(actionId, {
+            content:
+              "Your wallet still has a pending transaction. Please wait for it to confirm, then try again.",
+            status: "error",
+          });
+          return;
+        }
         const txHash = await sendTx({
           to: tx.to,
           data: tx.data as `0x${string}`,
@@ -2184,7 +2278,6 @@ const ClimateAgentPage = () => {
           ...(tx.gas ? { gas: tx.gas } : {}),
           ...(tx.maxFeePerGas ? { maxFeePerGas: tx.maxFeePerGas } : {}),
           ...(tx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas } : {}),
-          ...(typeof swapNonce === "bigint" ? { nonce: swapNonce } : {}),
         });
 
         updateMessage(actionId, {
@@ -2234,9 +2327,17 @@ const ClimateAgentPage = () => {
           : "Action failed. Please try again.";
       const isDenied =
         /user denied|user rejected|denied transaction|rejected the request/i.test(raw);
+      const isNonceTooLow =
+        /nonce too low|already known|known transaction/i.test(raw);
+      const isReplacementUnderpriced =
+        /replacement transaction underpriced/i.test(raw);
       const message = isDenied
         ? "Transaction signature was rejected in your wallet."
-        : raw;
+        : isNonceTooLow
+          ? "Your wallet has a pending transaction with the same nonce. Please wait for it to confirm, speed it up in your wallet, or reset your account nonce, then try again."
+          : isReplacementUnderpriced
+            ? "There is already a pending transaction with this nonce. If you want to replace it, increase the gas fees by at least 10% in your wallet and resubmit."
+            : raw;
 
       if (actionId) {
         updateMessage(actionId, {
