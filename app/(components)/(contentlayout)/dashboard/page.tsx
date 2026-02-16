@@ -457,7 +457,7 @@ const Dashboard = () => {
                                                             <div className="mb-6">
                                                                 <p className="text-[.9375rem] mb-2 font-semibold">Description :</p>
                                                                 <p className="text-[0.75rem]">
-                                                                    Bitgrass will tokenize <b className="text-defaulttextcolor">100 hectares of farmland</b>  into a limited collection of <b className="text-defaulttextcolor"> 3,200 NFTs</b>, launching in <b className="text-defaulttextcolor">2026.</b>
+                                                                    Bitgrass will tokenize <b className="text-defaulttextcolor">100 hectares of farmland</b>  into a limited collection of <b className="text-defaulttextcolor"> 3,200 plots</b>, launching in <b className="text-defaulttextcolor">2026.</b>
 
                                                                 </p><br /> Each NFT represents a tokenized farmland plot with multiple use cases:<br />
                                                                 <ul className="text-[0.75rem] list-disc list-inside ml-4">
@@ -828,10 +828,10 @@ const Dashboard = () => {
                                                     <div className="text-[.9375rem] font-semibold mb-2">Utilities:</div>
                                                     <div className="mb-3">
                                                         <ul className="task-details-key-tasks ps-[2rem] mb-0">
-                                                            <li> <b className="text-defaulttextcolor">Staking:</b> Earn rewards, with boosted APY for NFT adopters. </li>
+                                                            <li> <b className="text-defaulttextcolor">Staking:</b> Earn rewards, with boosted APY for land adopters. </li>
                                                             <li><b className="text-defaulttextcolor">Carbon Credits Purchase</b></li>
                                                             <li><b className="text-defaulttextcolor">Access to Carbon Market Database, Knowledge Hub, Insights, and Reports.</b></li>
-                                                            <li><b className="text-defaulttextcolor">Vesting Rewards:</b> Early NFT investors receive $BTG over time.</li>
+                                                            <li><b className="text-defaulttextcolor">Vesting Rewards:</b> Early Landplot investors receive $BTG over time.</li>
                                                             <li><b className="text-defaulttextcolor">Governance:</b> Proposal/Vote.</li>
 
                                                         </ul>

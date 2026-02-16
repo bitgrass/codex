@@ -108,7 +108,7 @@ const PortfolioTabs = ({
                   aria-controls="nfts-tab-pane"
                   onClick={(e) => handleTabChange(e, "nfts-tab-pane")}
                 >
-                  NFTs
+                  Landplots
                 </button>
                 <button
                   type="button"

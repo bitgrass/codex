@@ -262,7 +262,7 @@ const CryptoTable = ({
               </span>
               <div className="ml-1 flex flex-col gap-1 min-w-0">
                 <div className="font-bold text-xl">{nftLoading ? "..." : standard}</div>
-                <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Standard NFTs</div>
+                <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Standard Landplots</div>
               </div>
             </div>
             {/* Premium Card */}
@@ -272,7 +272,7 @@ const CryptoTable = ({
               </span>
               <div className="ml-1 flex flex-col gap-1 min-w-0">
                 <div className="font-bold text-xl">{nftLoading ? "..." : premium}</div>
-                <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Premium NFTs</div>
+                <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Premium Landplots</div>
               </div>
             </div>
             {/* Legendary Card */}
@@ -282,7 +282,7 @@ const CryptoTable = ({
               </span>
               <div className="ml-1 flex flex-col gap-1 min-w-0">
                 <div className="font-bold text-xl">{nftLoading ? "..." : legendary}</div>
-                <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Legendary NFTs</div>
+                <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Legendary Landplots</div>
               </div>
             </div>
           </div>

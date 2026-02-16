@@ -521,6 +521,13 @@ const Leaderboard = () => {
 
     return (
         <Fragment>
+            <style jsx>{`
+                @media (max-width: 640px) {
+                    .lb-col-center {
+                        text-align: center !important;
+                    }
+                }
+            `}</style>
             <Seo title={"Leaderboard"} />
             <div className='container'>
                 {/* -------- HERO SECTION ABOVE TABLE -------- */}
@@ -530,7 +537,7 @@ const Leaderboard = () => {
                         <div className=" w-full p-4">
                             <p className="text-4xl font-bold mb-1 ">Leaderboard</p>
                             <p className='dark:text-white/60'>
-                                Early NFT adopters earn $BTG through the Vesting Program <br />and
+                                Early Landplot adopters earn $BTG through the Vesting Program <br />and
                                 can unlock a BoostPass that doubles their staking APY (x2 boost).<br />
                                 $BTG rewards become claimable after the public sale ends.
                             </p>
@@ -625,7 +632,7 @@ const Leaderboard = () => {
 
                                 {/* Description */}
                                 <div className="text-[#3e4042] dark:text-white mb-5">
-                                    Your $BTG rewards are calculated based on the number <br /> of tokenized land plots (NFTs) you hold.
+                                    Your $BTG rewards are calculated based on the number <br /> of tokenized land plots you hold.
                                 </div>
 
                                 {/* BTG Balance and NFT Counts */}
@@ -810,7 +817,7 @@ const Leaderboard = () => {
                     <div className="xl:col-span-12 col-span-12">
                         <div className="box overflow-hidden " style={{ marginBottom: 0 }}>
                             <div className="box-header justify-between">
-                                <div className="box-title">NFT adopters Ranking</div>
+                                <div className="box-title">Landplot adopters Ranking</div>
                             </div>
                             <div className="box-body !p-0">
                                 <div className="table-responsive">
@@ -822,19 +829,19 @@ const Leaderboard = () => {
                                                 <th scope="col" className="text-start">
                                                     <div className="flex items-center gap-2">
                                                         {StandardNFTIcon}
-                                                        <span>Standard NFT</span>
+                                                        <span>Standard Landplots</span>
                                                     </div>
                                                 </th>
                                                 <th scope="col" className="text-start">
                                                     <div className="flex items-center gap-2">
                                                         {PremiumNFTIcon}
-                                                        <span>Premium NFT</span>
+                                                        <span>Premium Landplots</span>
                                                     </div>
                                                 </th>
                                                 <th scope="col" className="text-start">
                                                     <div className="flex items-center gap-2">
                                                         {LegendaryNFTIcon}
-                                                        <span>Legendary NFT</span>
+                                                        <span>Legendary Landplots</span>
                                                     </div>
                                                 </th>
                                                 <th scope="col" className="text-start">
@@ -905,9 +912,9 @@ const Leaderboard = () => {
                                                                     </span>
                                                                 </div>
                                                             </td>
-                                                            <td>{holder.standard}</td>
-                                                            <td>{holder.premium}</td>
-                                                            <td>{holder.legendary}</td>
+                                                            <td className="lb-col-center">{holder.standard}</td>
+                                                            <td className="lb-col-center">{holder.premium}</td>
+                                                            <td className="lb-col-center">{holder.legendary}</td>
                                                             <td className="font-black text-primary" style={{ fontWeight: 900 }}>
                                                                 {holder.btg_claim.toLocaleString()} BTG
                                                             </td>
@@ -989,7 +996,7 @@ const Leaderboard = () => {
                         {/* Content */}
                         <div className="flex flex-col items-center gap-4 text-center mb-6">
                             <p className="text-sm text-gray-600 dark:text-gray-300">
-                                BoostPass NFT allows $BTG holders <br /> to doubles their staking APY                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="inline">
+                                BoostPass Landplot allows $BTG holders <br /> to doubles their staking APY                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="inline">
                                     <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="rgb(127, 196, 71)" stroke="rgb(127, 196, 71)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                 </svg> (x2 boost)
                                 <br />

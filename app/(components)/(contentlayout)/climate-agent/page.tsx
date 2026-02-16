@@ -176,6 +176,16 @@ function formatAmountForSwap(value: bigint, decimals: number) {
   return trimmed.length ? trimmed : "0";
 }
 
+function formatDisplayAmount(amount: string, symbol: "ETH" | "USDC") {
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return amount;
+  if (symbol === "ETH") {
+    const fixed = numeric.toFixed(6);
+    return fixed.replace(/\.?0+$/, "");
+  }
+  return amount;
+}
+
 function formatUsd(value: number) {
   return value.toFixed(2);
 }
@@ -2280,8 +2290,37 @@ const ClimateAgentPage = () => {
           ...(tx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas } : {}),
         });
 
+        const fromIcon = intent.fromSymbol === "ETH" ? "{{ICON_ETH}}" : "{{ICON_USDC}}";
+        const toIcon = intent.toSymbol === "ETH" ? "{{ICON_ETH}}" : "{{ICON_USDC}}";
+        const fromUsdRaw = swapTransaction.quote.fromAmountUSD;
+        const toUsdRaw = swapTransaction.quote.toAmountUSD;
+        const fromUsdValue = Number(fromUsdRaw);
+        const toUsdValue = Number(toUsdRaw);
+        const fromUsdLabel =
+          Number.isFinite(fromUsdValue) && fromUsdValue > 0
+            ? `(≈$${formatUsd(fromUsdValue)})`
+            : "";
+        const toUsdLabel =
+          Number.isFinite(toUsdValue) && toUsdValue > 0
+            ? `(≈$${formatUsd(toUsdValue)})`
+            : "";
+
         updateMessage(actionId, {
-          content: "Swap submitted successfully.",
+          content: [
+            "Swapped",
+            formatDisplayAmount(swapAmount, intent.fromSymbol),
+            intent.fromSymbol,
+            fromIcon,
+            fromUsdLabel,
+            "→", 
+            formatDisplayAmount(quotedOut, intent.toSymbol),
+            intent.toSymbol,
+            toIcon,
+            toUsdLabel,
+            
+          ]
+            .filter(Boolean)
+            .join(" "),
           status: "success",
           txHash,
         });

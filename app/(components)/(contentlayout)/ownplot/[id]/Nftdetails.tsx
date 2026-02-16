@@ -920,7 +920,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
             // Basic check: user must have at least the NFT price
             if (balance < value) {
                 throw new Error(
-                    `Insufficient balance. Need ${ethers.formatEther(value)} ETH for NFT. ` +
+                    `Insufficient balance. Need ${ethers.formatEther(value)} ETH for Landplot. ` +
                     `Current balance: ${ethers.formatEther(balance)} ETH`
                 );
             }
@@ -941,7 +941,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                 const currentOwner = await nftContract.ownerOf(tokenId);
 
                 if (currentOwner.toLowerCase() !== parameters.offerer.toLowerCase()) {
-                    throw new Error("NFT is no longer owned by the seller. The listing is invalid.");
+                    throw new Error("Landplot is no longer owned by the seller. The listing is invalid.");
                 }
 
                 // Check if Seaport is approved
@@ -1505,7 +1505,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                         <div className="xl:col-span-8 col-span-12">
                                             <div className="xxl:mt-0 mt-4">
                                                 <p className="text-[1.125rem] mb-4 font-semibold mb-0 text-hights" style={{ fontSize: "22px" }}>
-                                                    Bitgrass NFT Collection – Standard 100m² NFT
+                                                    Bitgrass Landplots Collection – Standard 100m² Plot
                                                 </p>
                                                 <div className="grid grid-cols-12 mb-6">
                                                     <div className="xxl:col-span-3 xl:col-span-12 col-span-12">
@@ -1534,7 +1534,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                                 <div className="mb-4">
                                                     <p className="text-[0.8rem] text-[#8C9097]  mb-1">Description :</p>
                                                     <p>
-                                                        A <b className="text-hights">Tokenized 100 m² Land plot</b> that grants you the <b className="text-hights">Right of Use for Carbon Credits</b>.
+                                                        A <b className="text-hights">Tokenized 100 m² Land Landplot</b> that grants you the <b className="text-hights">Right of Use for Carbon Credits</b>.
                                                         <br />
                                                         Experience the transition from tokenized land to tokenized carbon credits with <b className="text-hights">#RWA</b>.
                                                     </p>
@@ -1551,7 +1551,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
 
                                                                 </p>
                                                                 <p className="text-[0.875rem] font-semibold mb-0 text-hights">Backed by Real Land</p>
-                                                                <p>  Each NFT is tied to real land</p>
+                                                                <p>  Each plot is tied to real land</p>
                                                             </div>
                                                         </div>
                                                         <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
@@ -1576,21 +1576,21 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                                                     </svg>
 
                                                                 </p>
-                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">NFT staking</p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">Landplot staking</p>
                                                                 <p>Earn TCO₂ starting in 2026</p>
                                                             </div>
                                                         </div>
                                                     </div>
                                                 </div>
                                                 <div>
-                                                    <p className="text-[0.8rem] text-[#8C9097]  mb-2 ">NFT Details :</p>
+                                                    <p className="text-[0.8rem] text-[#8C9097]  mb-2 ">Landplot Details :</p>
                                                     <div className="table-responsive">
                                                         <table className="table table-bordered whitespace-nowrap min-w-full">
                                                             <tbody>
                                                                 <tr><th className="font-semibold text-start">Type</th><td>ERC-721</td></tr>
                                                                 <tr><th className="font-semibold text-start">Rarity</th><td>Standard</td></tr>
-                                                                <tr><th className="font-semibold text-start">Standard Supply</th><td>2000 NFTs</td></tr>
-                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>100 m² (each NFT corresponds to a real land plot)</td></tr>
+                                                                <tr><th className="font-semibold text-start">Standard Supply</th><td>2000 landplots</td></tr>
+                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>100 m²</td></tr>
                                                             </tbody>
                                                         </table>
                                                     </div>
@@ -1620,7 +1620,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                                     >
                                                         <img
                                                             src="/assets/images/apps/500m2s.webp"
-                                                            alt="Custom NFT Preview"
+                                                            alt="Custom Landplot Preview"
                                                             className="object-contain w-full transition-opacity duration-500 rounded-lg"
                                                             style={{ opacity: imageOpacity.premium }}
                                                             onLoad={() => {
@@ -1654,7 +1654,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                         <div className="xl:col-span-8 col-span-12">
                                             <div className="xxl:mt-0 mt-4">
                                                 <p className="text-[1.125rem] mb-4 font-semibold mb-0 text-hights" style={{ fontSize: "22px" }}>
-                                                    Bitgrass NFT Collection – Premium 500m² NFT
+                                                    Bitgrass Landplots Collection – Premium 500m² Plot
                                                 </p>
                                                 <div className="grid grid-cols-12 mb-6">
                                                     <div className="xxl:col-span-3 xl:col-span-12 col-span-12">
@@ -1699,7 +1699,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
 
                                                                 </p>
                                                                 <p className="text-[0.875rem] font-semibold mb-0 text-hights">Backed by Real Land</p>
-                                                                <p>  Each NFT is tied to real land</p>
+                                                                <p>  Each plot is tied to real land</p>
                                                             </div>
                                                         </div>
                                                         <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
@@ -1724,21 +1724,21 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                                                     </svg>
 
                                                                 </p>
-                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">NFT staking</p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">Landplot staking</p>
                                                                 <p>Earn TCO₂ starting in 2026</p>
                                                             </div>
                                                         </div>
                                                     </div>
                                                 </div>
                                                 <div>
-                                                    <p className="text-[0.8rem] text-[#8C9097] mb-2">NFT Details :</p>
+                                                    <p className="text-[0.8rem] text-[#8C9097] mb-2">Landplot Details :</p>
                                                     <div className="table-responsive">
                                                         <table className="table table-bordered whitespace-nowrap min-w-full">
                                                             <tbody>
                                                                 <tr><th className="font-semibold text-start">Type</th><td>ERC-721</td></tr>
                                                                 <tr><th className="font-semibold text-start">Rarity</th><td>Premium</td></tr>
-                                                                <tr><th className="font-semibold text-start">Premium Supply</th><td>800 NFTs</td></tr>
-                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>500 m² (each NFT corresponds to a real land plot)</td></tr>
+                                                                <tr><th className="font-semibold text-start">Premium Supply</th><td>800 Landplots</td></tr>
+                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>500 m²</td></tr>
                                                             </tbody>
                                                         </table>
                                                     </div>
@@ -1769,7 +1769,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                                     >
                                                         <img
                                                             src="/assets/images/apps/1000m2s.webp"
-                                                            alt="Custom NFT Preview"
+                                                            alt="Custom Landplot Preview"
                                                             className="object-contain w-full transition-opacity duration-500 rounded-lg"
                                                             style={{ opacity: imageOpacity.legendary }}
                                                             onLoad={() => {
@@ -1802,7 +1802,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                         <div className="xl:col-span-8 col-span-12">
                                             <div className="xxl:mt-0 mt-4">
                                                 <p className="text-[1.125rem] mb-4 font-semibold mb-0 text-hights" style={{ fontSize: "22px" }}>
-                                                    Bitgrass NFT Collection – Legendary 1000m² NFT
+                                                    Bitgrass Landplots Collection – Legendary 1000m² Plot
                                                 </p>
                                                 <div className="grid grid-cols-12 mb-6">
                                                     <div className="xxl:col-span-3 xl:col-span-12 col-span-12">
@@ -1847,7 +1847,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
 
                                                                 </p>
                                                                 <p className="text-[0.875rem] font-semibold mb-0 text-hights">Backed by Real Land</p>
-                                                                <p>  Each NFT is tied to real land</p>
+                                                                <p>  Each plot is tied to real land</p>
                                                             </div>
                                                         </div>
                                                         <div className="xxl:col-span-4 col-span-12 sm:mt-0 mt-4">
@@ -1872,21 +1872,21 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                                                                     </svg>
 
                                                                 </p>
-                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">NFT staking</p>
+                                                                <p className="text-[0.875rem] font-semibold mb-0 text-hights">Landplot staking</p>
                                                                 <p>Earn TCO₂ starting in 2026</p>
                                                             </div>
                                                         </div>
                                                     </div>
                                                 </div>
                                                 <div>
-                                                    <p className="text-[0.8rem] text-[#8C9097] mb-2">NFT Details :</p>
+                                                    <p className="text-[0.8rem] text-[#8C9097] mb-2">Landplot Details :</p>
                                                     <div className="table-responsive">
                                                         <table className="table table-bordered whitespace-nowrap min-w-full">
                                                             <tbody>
                                                                 <tr><th className="font-semibold text-start">Type</th><td>ERC-721</td></tr>
                                                                 <tr><th className="font-semibold text-start">Rarity</th><td>Legendary</td></tr>
-                                                                <tr><th className="font-semibold text-start">Legendary Supply</th><td>40 NFTs</td></tr>
-                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>1000 m² (each NFT corresponds to a real land plot)</td></tr>
+                                                                <tr><th className="font-semibold text-start">Legendary Supply</th><td>400 Landplots</td></tr>
+                                                                <tr><th className="font-semibold text-start">Covered Area</th><td>1000 m²</td></tr>
                                                             </tbody>
                                                         </table>
                                                     </div>
@@ -1948,7 +1948,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                             className="bg-camel shadow-lg rounded-md w-full max-w-md min-w-[320px] px-5 py-4"
                         >
                             <div className="flex items-center justify-between w-full">
-                                {/* NFT Icon */}
+                                {/* Landplot Icon */}
                                 <div className="flex-shrink-0">
                                     <img
                                         src={pendingNftImage}

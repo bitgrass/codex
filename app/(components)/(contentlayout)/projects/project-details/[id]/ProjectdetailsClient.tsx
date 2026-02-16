@@ -185,7 +185,7 @@ const imageUrl = getAbsoluteUrl('/assets/images/brand-logos/farShare.jpg');
   useEffect(() => {
     const calculateDaysLeft = (): number => {
       const today = new Date();
-      const targetDate = new Date(2025, 11, 31);
+      const targetDate = new Date(2026, 7, 31);
       return Math.ceil((targetDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
     };
     setDaysLeft(calculateDaysLeft());
