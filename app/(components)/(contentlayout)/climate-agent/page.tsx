@@ -1064,7 +1064,8 @@ const ClimateAgentPage = () => {
       id: "welcome",
       role: "assistant",
       content:
-        "How we can start?",
+        "<strong>How can I help you today?</strong>\n" +
+        "I can execute transactions, check your assets, explain platform features, and answer your climate-related questions.",
     },
   ]);
   const [showStakePendingToast, setShowStakePendingToast] = useState(false);
@@ -1106,7 +1107,10 @@ const ClimateAgentPage = () => {
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    const withIcons = escaped
+    const withShortAddresses = escaped.replace(/0x[a-fA-F0-9]{40}/g, (match) => {
+      return `${match.slice(0, 6)}…${match.slice(-4)}`;
+    });
+    const withIcons = withShortAddresses
       .replace(
         /\{\{ICON_LEGENDARY\}\}/g,
         '<img src="/assets/images/svg/lsvg.svg" alt="Legendary" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
