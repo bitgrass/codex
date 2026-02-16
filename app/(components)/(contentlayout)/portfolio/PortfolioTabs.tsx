@@ -79,16 +79,16 @@ const PortfolioTabs = ({
             {/* ---------- Tabs Navigation ---------- */}
             <div className="!p-4 border-b dark:border-defaultborder/10 border-dashed md:flex items-center justify-between nav-div">
               <nav
-                className="-mb-0.5 flex md:space-x-4 rtl:space-x-reverse pb-2 gap-3"
+                className="-mb-0.5 flex flex-wrap md:space-x-4 rtl:space-x-reverse pb-2 gap-3 w-full"
                 role="tablist"
               >
                 <button
                   type="button"
-                  className={`w-full sm:w-auto flex active ${
+                  className={`w-full sm:w-auto flex flex-1 sm:flex-none justify-center text-center active ${
                     activeTab === "crypto-tab-pane"
                       ? "hs-tab-active:font-semibold hs-tab-active:text-primary border-b-2 border-primary"
                       : "dark:text-white"
-                  } py-2 px-4 text-primary text-sm cursor-pointer`}
+                  } py-2 px-3 sm:px-4 text-primary text-xs sm:text-sm leading-tight cursor-pointer`}
                   id="crypto-tab"
                   data-hs-tab="#crypto-tab-pane"
                   aria-controls="crypto-tab-pane"
@@ -98,11 +98,11 @@ const PortfolioTabs = ({
                 </button>
                 <button
                   type="button"
-                  className={`w-full sm:w-auto flex active ${
+                  className={`w-full sm:w-auto flex flex-1 sm:flex-none justify-center text-center active ${
                     activeTab === "nfts-tab-pane"
                       ? "hs-tab-active:font-semibold hs-tab-active:text-primary border-b-2 border-primary"
                       : "dark:text-white"
-                  } py-2 px-4 text-primary text-sm cursor-pointer`}
+                  } py-2 px-3 sm:px-4 text-primary text-xs sm:text-sm leading-tight cursor-pointer`}
                   id="nfts-tab"
                   data-hs-tab="#nfts-tab-pane"
                   aria-controls="nfts-tab-pane"
@@ -112,11 +112,11 @@ const PortfolioTabs = ({
                 </button>
                 <button
                   type="button"
-                  className={`w-full sm:w-auto flex active ${
+                  className={`w-full sm:w-auto flex flex-1 sm:flex-none justify-center text-center active ${
                     activeTab === "transactions-tab-pane"
                       ? "hs-tab-active:font-semibold hs-tab-active:text-primary border-b-2 border-primary"
                       : "dark:text-white"
-                  } py-2 px-4 text-primary text-sm cursor-pointer`}
+                  } py-2 px-3 sm:px-4 text-primary text-xs sm:text-sm leading-tight cursor-pointer`}
                   id="transactions-tab"
                   data-hs-tab="#transactions-tab-pane"
                   aria-controls="transactions-tab-pane"

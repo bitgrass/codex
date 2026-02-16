@@ -1467,7 +1467,7 @@ const StakingNFT = () => {
                             <p className="text-4xl font-bold mb-1">Earn BCO2</p>
                             <p className='dark:text-white/60 mb-4'>
                                 Stake your tokenized land plots to earn BCO2 rewards.<br />
-                                The more NFTs you stake, the higher your earnings potential.
+                                The more landplots you stake, the higher your earnings potential.
                             </p>
                         </div>
 
@@ -1549,7 +1549,7 @@ const StakingNFT = () => {
                                             i
                                         </div>
                                         <div className="absolute right-0 top-5 hidden group-hover:block bg-camel text-defaulttextcolor text-xs rounded px-3 py-2 w-48 z-50 shadow-lg">
-                                            Current earnings are rewards accumulated from your staked NFTs. Claim them to add to your total earned.
+                                            Current earnings are rewards accumulated from your staked landplots. Claim them to add to your total earned.
                                         </div>
                                     </div>
                                     <div className="mb-3">

@@ -27,6 +27,7 @@ type ChatMessage = {
   content: string;
   status?: ChatStatus;
   txHash?: string;
+  showPortfolioLink?: boolean;
   nfts?: {
     id: string;
     name: string;
@@ -611,6 +612,12 @@ function getPoolForTokenId(tokenId: number) {
   return null;
 }
 
+function getTierIcon(tier: "Standard" | "Premium" | "Legendary") {
+  if (tier === "Legendary") return "{{ICON_LEGENDARY}}";
+  if (tier === "Premium") return "{{ICON_PREMIUM}}";
+  return "{{ICON_STANDARD}}";
+}
+
 async function isApprovedForAll(
   walletClient: any,
   owner: `0x${string}`,
@@ -649,6 +656,36 @@ async function waitForReceipt(
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
   return null;
+}
+
+async function getPurchasedTokenIds(params: {
+  walletClient: any;
+  txHash: string;
+  toAddress: `0x${string}`;
+}) {
+  const { walletClient, txHash, toAddress } = params;
+  const receipt = await waitForReceipt(walletClient, txHash);
+  if (!receipt?.logs || !Array.isArray(receipt.logs)) return [];
+  const iface = new ethers.Interface([
+    "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+  ]);
+  const target = String(NFT_COLLECTION_ADDRESS).toLowerCase();
+  const toLower = toAddress.toLowerCase();
+  const ids = new Set<number>();
+  for (const log of receipt.logs) {
+    if (!log?.address || String(log.address).toLowerCase() !== target) continue;
+    try {
+      const parsed = iface.parseLog(log);
+      if (parsed?.name !== "Transfer") continue;
+      const to = String(parsed.args?.to || "").toLowerCase();
+      if (to !== toLower) continue;
+      const tokenId = Number(parsed.args?.tokenId ?? NaN);
+      if (Number.isFinite(tokenId)) ids.add(tokenId);
+    } catch {
+      continue;
+    }
+  }
+  return Array.from(ids.values());
 }
 
 async function getNonceCounts(
@@ -1995,16 +2032,6 @@ const ClimateAgentPage = () => {
         );
         const items = Array.isArray(data?.items) ? data.items : [];
 
-        if (items.length === 0) {
-          updateMessage(actionId, {
-            content:
-              "No land plots found for this wallet in the landplot collection. " +
-              "If you just minted, wait a minute for indexing or confirm you're connected to the right wallet.",
-            status: "success",
-          });
-          return;
-        }
-
         const [legendaryIds, premiumIds, standardIds] = await Promise.all([
           getStakedTokenIds(
             walletClient,
@@ -2073,6 +2100,16 @@ const ClimateAgentPage = () => {
           });
         const allCards = [...nftCards, ...stakedOnlyCards];
 
+        if (items.length === 0 && allCards.length === 0) {
+          updateMessage(actionId, {
+            content:
+              "No land plots found for this wallet in the landplot collection. " +
+              "If you just minted, wait a minute for indexing or confirm you're connected to the right wallet.",
+            status: "success",
+          });
+          return;
+        }
+
         const wantsStaked = /(staked|already staked)/i.test(trimmed);
         const wantsAvailable = /(available|unstaked|not staked)/i.test(trimmed);
         const filteredCards = wantsStaked
@@ -2120,10 +2157,24 @@ const ClimateAgentPage = () => {
         if (intent.tier === "Standard") {
           const mintTx = await buildStandardMintTx(address as `0x${string}`);
           const txHash = await sendTx(mintTx);
+          const tokenIds = await getPurchasedTokenIds({
+            walletClient,
+            txHash,
+            toAddress: address as `0x${string}`,
+          });
+          const tierIcon = getTierIcon(intent.tier);
+          const purchaseLine = tokenIds.length
+            ? tokenIds.length === 1
+              ? `Your ${tierIcon}${intent.tier} Plot <strong>#${tokenIds[0]}</strong> is purchased! .`
+              : `Your plots ${tokenIds
+                  .map((id) => `<strong>#${id}</strong>${tierIcon}`)
+                  .join(", ")}are purchased!`
+            : `Your ${intent.tier} Plot purchase submitted successfully.`;
           updateMessage(actionId, {
-            content: "Standard plot mint submitted successfully.",
+            content: purchaseLine,
             status: "success",
             txHash,
+            showPortfolioLink: true,
           });
           return;
         }
@@ -2142,10 +2193,24 @@ const ClimateAgentPage = () => {
           buyerAddress: address as `0x${string}`,
         });
         const txHash = await sendTx(purchaseTx);
+        const tokenIds = await getPurchasedTokenIds({
+          walletClient,
+          txHash,
+          toAddress: address as `0x${string}`,
+        });
+        const tierIcon = getTierIcon(intent.tier);
+        const purchaseLine = tokenIds.length
+          ? tokenIds.length === 1
+            ? `Your ${tierIcon}${intent.tier} Plot <strong>#${tokenIds[0]}</strong> is purchased! .`
+            : `Your plots ${tokenIds
+                .map((id) => `<strong>#${id}</strong>${tierIcon}`)
+                .join(", ")}are purchased!`
+          : `Your ${intent.tier} Plot purchase submitted successfully.`;
         updateMessage(actionId, {
-          content: `${intent.tier} plot purchase submitted successfully.`,
+          content: purchaseLine,
           status: "success",
           txHash,
+          showPortfolioLink: true,
         });
         return;
       }
@@ -2785,14 +2850,21 @@ const ClimateAgentPage = () => {
                             </div>
                           )}
                           {message.txHash && (
-                            <a
-                              href={`https://basescan.org/tx/${message.txHash}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs mt-2 inline-block underline"
-                            >
-                              View on Basescan
-                            </a>
+                            <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                              <a
+                                href={`https://basescan.org/tx/${message.txHash}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline"
+                              >
+                                View on Basescan
+                              </a>
+                              {message.showPortfolioLink && (
+                                <a href="/portfolio" className="underline">
+                                  View in Portfolio
+                                </a>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
