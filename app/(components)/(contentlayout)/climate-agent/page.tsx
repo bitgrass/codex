@@ -187,6 +187,13 @@ function formatDisplayAmount(amount: string, symbol: "ETH" | "USDC") {
   return amount;
 }
 
+function formatPendingAmount(amount: string) {
+  if (!amount.includes(".")) return amount;
+  const [whole, frac = ""] = amount.split(".");
+  if (frac.length <= 3) return amount;
+  return `${whole}.${frac.slice(0, 6)}`;
+}
+
 function formatUsd(value: number) {
   return value.toFixed(2);
 }
@@ -2257,7 +2264,7 @@ const ClimateAgentPage = () => {
         }
 
         updateMessage(actionId, {
-          content: `Quoting: ${swapAmount} ${intent.fromSymbol} -> ${intent.toSymbol} on Base...`,
+          content: `Swapping ${swapAmount} ${intent.fromSymbol} -> ${intent.toSymbol} on Base...`,
           status: "pending",
         });
 
@@ -2287,9 +2294,9 @@ const ClimateAgentPage = () => {
         );
 
         updateMessage(actionId, {
-          content:
-            `Quote: ~${quotedOut} ${swapTransaction.quote.to.symbol}. ` +
-            `Submitting transaction (slippage ${swapTransaction.quote.slippage}%).`,
+          content: `Swapping ${formatPendingAmount(swapAmount)} ${intent.fromSymbol} → ${formatPendingAmount(
+            quotedOut,
+          )} ${intent.toSymbol}...`,
           status: "pending",
         });
 
