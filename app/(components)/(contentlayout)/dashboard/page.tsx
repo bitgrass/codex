@@ -459,7 +459,7 @@ const Dashboard = () => {
                                                                 <p className="text-[0.75rem]">
                                                                     Bitgrass will tokenize <b className="text-defaulttextcolor">100 hectares of farmland</b>  into a limited collection of <b className="text-defaulttextcolor"> 3,200 plots</b>, launching in <b className="text-defaulttextcolor">2026.</b>
 
-                                                                </p><br /> Each NFT represents a tokenized farmland plot with multiple use cases:<br />
+                                                                </p><br /> Each plot represents a tokenized land with multiple use cases:<br />
                                                                 <ul className="text-[0.75rem] list-disc list-inside ml-4">
                                                                     <li>Grants the<b className="text-defaulttextcolor"> Right of Use for Carbon Credits</b> </li>
                                                                     <li>Allows early investors to<b className="text-defaulttextcolor"> earn $BTG through a vesting schedule</b></li>
