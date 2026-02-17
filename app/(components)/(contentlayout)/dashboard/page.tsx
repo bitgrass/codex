@@ -440,7 +440,7 @@ const Dashboard = () => {
                                                             </div>
                                                             <div className="flex-grow main-profile-info">
                                                                 <div className="flex items-center !justify-between">
-                                                                    <h6 className="font-semibold mb-1 text-primary text-[1rem]">Bitgrass NFT Collection</h6>
+                                                                    <h6 className="font-semibold mb-1 text-primary text-[1rem]">Bitgrass Land Collection</h6>
                                                                     <Link href="/projects/project-details/1" className="ti-btn bg-camel10 !font-medium !gap-0"><i className="ri-add-line me-1 align-middle inline-block"></i>Explore</Link>
 
                                                                 </div>
