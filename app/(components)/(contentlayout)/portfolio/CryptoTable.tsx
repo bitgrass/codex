@@ -33,7 +33,7 @@ const CryptoTable = ({
   const [boostPassLoading, setBoostPassLoading] = useState<boolean>(false);
 
   const API_KEY = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
-  const BOOST_PASS_CONTRACT = "0xBd528427e8612ff27961cDdb819688aF5c7D8735";
+  const BOOST_PASS_CONTRACT = "0x3eA7C93F32e0774fB2E47D5e14f6cFEad75f74cE";
 
   const getChangeStyle = (percent: number | string) => {
     const value = parseFloat(percent as string);

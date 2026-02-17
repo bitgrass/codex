@@ -20,16 +20,11 @@ const CAMPAIGN_CHAIN_ID = 8453; // Base chain
 
 // Array of claim links from your Excel file - add all your claim links here
 const CLAIM_LINKS = [
-    "https://claim.linkdrop.io/#/redeem/Cptb1iJtT9MH?src=d",
-    "https://claim.linkdrop.io/#/redeem/CXBtmfQgf9ip?src=d",
-    "https://claim.linkdrop.io/#/redeem/2i5s2g8izo33?src=d",
-    "https://claim.linkdrop.io/#/redeem/5NzZmsHUB9dN?src=d",
-    "https://claim.linkdrop.io/#/redeem/4JjQ29a8ApWL?src=d",
-    "https://claim.linkdrop.io/#/redeem/GmGFpow1adMa?src=d",
-    "https://claim.linkdrop.io/#/redeem/5ZaY5JzFXpjf?src=d",
-    "https://claim.linkdrop.io/#/redeem/7YCruSrUFTBa?src=d",
-    "https://claim.linkdrop.io/#/redeem/91c4Be31H8BX?src=d",
-    "https://claim.linkdrop.io/#/redeem/4eVPZgkVQgj1?src=d",
+    "https://claim.linkdrop.io/#/redeem/FnTGVmid4Fa3?src=d",
+    "https://claim.linkdrop.io/#/redeem/kX5B8xZjGXuV?src=d",
+    "https://claim.linkdrop.io/#/redeem/HNyCBPasCoyT?src=d",
+    "https://claim.linkdrop.io/#/redeem/DYPvn2cggXME?src=d",
+    "https://claim.linkdrop.io/#/redeem/FvHTaZtCUn1Z?src=d",
 ];
 
 // Initialize Linkdrop SDK helper
@@ -127,7 +122,7 @@ const Leaderboard = () => {
     const [statusReady, setStatusReady] = useState<boolean>(false);
     const [isMounted, setIsMounted] = useState<boolean>(false);
     const [pageReady, setPageReady] = useState<boolean>(false);
-    const BOOST_PASS_CONTRACT = "0xBd528427e8612ff27961cDdb819688aF5c7D8735";
+    const BOOST_PASS_CONTRACT = "0x3eA7C93F32e0774fB2E47D5e14f6cFEad75f74cE";
     const API_KEY = process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
 
     // Set mounted state on client side only
