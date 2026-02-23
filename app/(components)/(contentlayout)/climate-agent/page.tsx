@@ -147,6 +147,18 @@ type AgentResponse = {
   reply: string;
   intent: ParsedIntent;
 };
+type BuyPlotIntent = Extract<ParsedIntent, { type: "buy_plot" }>;
+
+function isWriteIntent(intent: ParsedIntent) {
+  return (
+    intent.type === "swap" ||
+    intent.type === "transfer" ||
+    intent.type === "claim_bco2" ||
+    intent.type === "stake" ||
+    intent.type === "unstake" ||
+    intent.type === "buy_plot"
+  );
+}
 
 function isApiError(value: any): value is { code: string; error: string; message: string } {
   return (
@@ -225,7 +237,7 @@ function parseTransferLocal(text: string): ParsedIntent | null {
 function parseBalanceLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
   const match = normalized.match(
-    /(balance|balances|wallet balance|check balance|check my balance|check my wallet)/i,
+    /(balance|balances|wallet balance|check balance|check my balance|check my wallet|can you check my balance|what is my balance|what's my balance|show my balance|how much (eth|usdc).*(do i have|i have)|how.*(much|many)?.*(have|got).*(wallet|wllaet|wallet|account)|check all|show all assets|check all assets|check everything in my wallet)/i,
   );
   if (!match) return null;
   return { type: "balance", chainId: 8453 };
@@ -359,7 +371,7 @@ function parseNftsLocal(text: string): ParsedIntent | null {
   return { type: "nfts", chainId: 8453 };
 }
 
-function parseBuyPlotLocal(text: string): ParsedIntent | null {
+function parseBuyPlotLocal(text: string): BuyPlotIntent | null {
   const normalized = text.trim().toLowerCase();
   const hasBuyVerb = /(buy|purchase|get|own|mint)/i.test(normalized);
   if (!hasBuyVerb) return null;
@@ -1224,47 +1236,56 @@ const ClimateAgentPage = () => {
     if (json.intent.type === "unknown") {
       const localTransfer = parseTransferLocal(text);
       if (localTransfer) {
-        return { reply: json.reply, intent: localTransfer };
+        return { reply: "Got it — preparing that transfer now.", intent: localTransfer };
       }
       const localBalance = parseBalanceLocal(text);
       if (localBalance) {
-        return { reply: json.reply, intent: localBalance };
+        return { reply: "Got it — checking your Base wallet balances now.", intent: localBalance };
       }
       const localEarnings = parseEarningsLocal(text);
       if (localEarnings) {
-        return { reply: json.reply, intent: localEarnings };
+        return {
+          reply:
+            localEarnings.type === "total_earned"
+              ? "Got it — checking your total BCO2 earned now."
+              : "Got it — checking your current BCO2 earnings now.",
+          intent: localEarnings,
+        };
       }
       const localClaim = parseClaimLocal(text);
       if (localClaim) {
-        return { reply: json.reply, intent: localClaim };
+        return { reply: "Got it — claiming your BCO2 rewards now.", intent: localClaim };
       }
       const localLeaderboardTop = parseLeaderboardTopLocal(text);
       if (localLeaderboardTop) {
-        return { reply: json.reply, intent: localLeaderboardTop };
+        return { reply: "Got it — fetching the top leaderboard now.", intent: localLeaderboardTop };
       }
       const localLeaderboard = parseLeaderboardLocal(text);
       if (localLeaderboard) {
-        return { reply: json.reply, intent: localLeaderboard };
+        return { reply: "Got it — checking your leaderboard rank now.", intent: localLeaderboard };
       }
       const localBtgClaim = parseBtgClaimLocal(text);
       if (localBtgClaim) {
-        return { reply: json.reply, intent: localBtgClaim };
+        return { reply: "Got it — checking your claimed BTG amount now.", intent: localBtgClaim };
       }
       const localStake = parseStakeLocal(text);
       if (localStake) {
-        return { reply: json.reply, intent: localStake };
+        return { reply: "Got it — preparing to stake your land plots now.", intent: localStake };
       }
       const localUnstake = parseUnstakeLocal(text);
       if (localUnstake) {
-        return { reply: json.reply, intent: localUnstake };
+        return { reply: "Got it — preparing to unstake your land plots now.", intent: localUnstake };
       }
       const localBuy = parseBuyPlotLocal(text);
       if (localBuy) {
-        return { reply: json.reply, intent: localBuy };
+        return {
+          reply: `Got it — preparing to buy a ${localBuy.tier} ${localBuy.size}m² plot.`,
+          intent: localBuy,
+        };
       }
       const localNfts = parseNftsLocal(text);
       if (localNfts) {
-        return { reply: json.reply, intent: localNfts };
+        return { reply: "Got it — checking your Base NFTs now.", intent: localNfts };
       }
     }
 
@@ -1421,19 +1442,19 @@ const ClimateAgentPage = () => {
       status: undefined,
     });
 
-    if (looksLikeQuestion) {
-      addMessage({
-        role: "assistant",
-        content:
-          "I can explain how to do that, but I won't execute transactions from a question. " +
-          "If you want me to proceed, give a direct command like: “Swap 10 USDC to ETH”, " +
-          "“Send 0.01 ETH to 0x...”, “Buy Standard 100m2 plot”, or “Claim BCO2”.",
-        status: "success",
-      });
+    if (agent.intent.type === "unknown") {
       return;
     }
 
-    if (agent.intent.type === "unknown") {
+    if (looksLikeQuestion && isWriteIntent(agent.intent)) {
+      addMessage({
+        role: "assistant",
+        content:
+          "I can explain how to do that, but I will not execute transactions from a question. " +
+          'If you want me to proceed, give a direct command like: "Swap 10 USDC to ETH", ' +
+          '"Send 0.01 ETH to 0x...", "Buy Standard 100m2 plot", or "Claim BCO2".',
+        status: "success",
+      });
       return;
     }
 

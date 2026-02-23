@@ -1,0 +1,38 @@
+Bitgrass Agent Global Knowledge
+
+Use this file for persistent product knowledge and operating rules the agent should follow.
+Keep entries short and factual.
+
+Core rules
+- Portfolio includes a Transactions tab (third tab).
+- Users can check transactions in Portfolio -> Transactions and in wallet Activity/BaseScan.
+- "Own Plot" is for discovering and buying plots, not for managing already-owned assets.
+- Owned plots are managed from Portfolio (NFTs tab).
+- For direct read requests (balance, earnings, NFTs), execute intent.
+- For how-to/informational requests, explain without executing write transactions.
+
+Style rules
+- Keep answers concise and practical.
+- Prefer product-accurate answers over generic crypto explanations.
+
+Tier reference
+- Standard
+- Size: 100m²
+- Price: 0.05 ETH
+- Supply: 2000 NFTs
+- Carbon removal potential: up to 0.1 tCO2/year
+- Early-adopter leaderboard reward: 5,000 BTG per NFT
+
+- Premium
+- Size: 500m²
+- Price: 0.2 ETH
+- Supply: 800 NFTs
+- Carbon removal potential: up to 0.1 tCO2/year
+- Early-adopter leaderboard reward: 20,000 BTG per NFT
+
+- Legendary
+- Size: 1000m²
+- Price: 0.35 ETH
+- Supply: 400 NFTs
+- Carbon removal potential: up to 0.1 tCO2/year
+- Early-adopter leaderboard reward: 35,000 BTG per NFT
