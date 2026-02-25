@@ -606,8 +606,15 @@ function isBtgClaimFormulaQuestion(message: string) {
 
 function getPlotDefinitionReply(message: string) {
   const normalized = message.trim().toLowerCase();
-  const asksDefinition = /\b(what is|what's|explain|define|meaning)\b/i.test(normalized);
-  if (!asksDefinition) return null;
+  const asksDefinition = /\b(what is|what's|explain|define|meaning|describe|details)\b/i.test(
+    normalized,
+  );
+  const shortTierPrompt =
+    /^\s*(standard|premium|legendary)\s*(plot|tier)?\s*\??\s*$/i.test(normalized) ||
+    /\b(explain me|tell me about)\b.*\b(standard|premium|legendary)\b.*\b(plot|tier)?/i.test(
+      normalized,
+    );
+  if (!asksDefinition && !shortTierPrompt) return null;
 
   const asksAllTiers =
     /\bstandard\b/i.test(normalized) &&
@@ -632,6 +639,34 @@ function getPlotDefinitionReply(message: string) {
     return "A Legendary plot is the 1000m² Bitgrass land NFT tier: 0.35 ETH, supply 400, carbon removal potential up to 0.1 tCO2/year, and 35,000 BTG early-adopter reward per eligible NFT.";
   }
   return null;
+}
+
+function getTierBco2EducationReply(message: string) {
+  const normalized = message.trim().toLowerCase();
+
+  const asksTierDiff =
+    /(difference|diff|compare|comparison|between|tiers|categories)/i.test(normalized) &&
+    /(plot|plots|standard|premium|legendary|tier|category)/i.test(normalized);
+
+  const asksBco2Meaning = /(what is|what's|explain|define|meaning)/i.test(normalized) &&
+    /(bco2|bc02|carbon credit|carbon credits)/i.test(normalized);
+
+  const asksHowToEarnBco2 =
+    /(how can i|how to|how do i|ways to|earn|get)/i.test(normalized) &&
+    /(bco2|bc02|carbon credit|carbon credits)/i.test(normalized);
+
+  if (!asksTierDiff && !asksBco2Meaning && !asksHowToEarnBco2) return null;
+
+  const tierSummary =
+    "Plot tiers: Standard (100m², 0.05 ETH, supply 2000), Premium (500m², 0.2 ETH, supply 800), Legendary (1000m², 0.35 ETH, supply 400).";
+  const bco2Summary =
+    "BCO2 represents carbon-credit rewards linked to your tokenized land plots and their carbon-removal potential.";
+  const earnFlow =
+    "How to earn BCO2: own a plot, stake it in the staking portal, then claim accrued BCO2 rewards from staking.";
+  const capacity =
+    "Per current guide data, each tier lists carbon removal potential up to 0.1 tCO2/year.";
+
+  return [tierSummary, bco2Summary, earnFlow, capacity].join(" ");
 }
 
 function fallbackResponse(message: string) {
@@ -754,6 +789,14 @@ export async function POST(request: Request) {
     if (plotDefinitionReply) {
       return Response.json({
         reply: plotDefinitionReply,
+        intent: { type: "unknown" as const },
+      });
+    }
+
+    const tierBco2EducationReply = getTierBco2EducationReply(message);
+    if (tierBco2EducationReply) {
+      return Response.json({
+        reply: tierBco2EducationReply,
         intent: { type: "unknown" as const },
       });
     }

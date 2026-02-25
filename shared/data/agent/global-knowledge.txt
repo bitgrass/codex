@@ -1,4 +1,4 @@
-Bitgrass Agent Global Knowledge
+﻿Bitgrass Agent Global Knowledge
 
 Use this file for persistent product knowledge and operating rules the agent should follow.
 Keep entries short and factual.
@@ -36,3 +36,14 @@ Tier reference
 - Supply: 400 NFTs
 - Carbon removal potential: up to 0.1 tCO2/year
 - Early-adopter leaderboard reward: 35,000 BTG per NFT
+
+BCO2 guidance
+- BCO2 is your carbon-credit reward stream tied to tokenized land plots and their carbon-removal potential.
+- Earning flow (simple):
+- 1) Own a plot: Standard, Premium, or Legendary.
+- 2) Stake it: open the Earn BCO2 (staking) page and stake your plot.
+- 3) Accrue rewards: BCO2 builds over time while your plot is staked.
+- 4) Claim anytime: claim your available BCO2 from the staking flow.
+- 5) Repeat and scale: stake more plots to increase your potential rewards.
+- If users ask "how to earn BCO2", explain the 5 steps above in short, practical language.
+- If users ask tier differences, always include size, price, supply, and carbon-removal potential.
