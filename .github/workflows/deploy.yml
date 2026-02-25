@@ -22,8 +22,6 @@ jobs:
 
       - name: Install
         run: yarn install --frozen-lockfile
-        env:
-          YARN_NETWORK_TIMEOUT: "600000"
 
       - name: Create .env from secret
         run: |
