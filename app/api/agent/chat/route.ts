@@ -230,6 +230,19 @@ type IntentKind = ParsedIntent["type"];
 
 function isInformationalForIntent(message: string, intentType: IntentKind) {
   const normalized = message.trim().toLowerCase();
+
+  // NFT checks should only execute for explicit ownership/account requests.
+  if (intentType === "nfts") {
+    const explicitNftAccountQuery =
+      /\b(check|show|get|list|fetch|view)\b.*\b(my|wallet|owned|own|have)\b.*\b(nft|nfts|plot|plots|landplot|landplots)\b/i.test(
+        normalized,
+      ) ||
+      /\b(my|wallet|owned|own|have)\b.*\b(nft|nfts|plot|plots|landplot|landplots)\b/i.test(
+        normalized,
+      );
+    return !explicitNftAccountQuery;
+  }
+
   const educationalCue =
     /\bhow to\b|\bhow do i\b|\bhow can i\b|\bexplain\b|\bguide me\b|\btutorial\b|\bsteps?\b|\bwalk me through\b|\btell me about\b|\bwhen should i\b|\bwhy\b/i.test(
       normalized,
@@ -251,19 +264,6 @@ function isInformationalForIntent(message: string, intentType: IntentKind) {
         normalized,
       );
     if (directAccountQuery) return false;
-  }
-
-  // NFT checks should only execute for explicit ownership/account requests.
-  if (intentType === "nfts") {
-    const explicitNftAccountQuery =
-      /\b(check|show|get|list|fetch|view)\b.*\b(my|wallet|owned|own|have)\b.*\b(nft|nfts|plot|plots|landplot|landplots)\b/i.test(
-        normalized,
-      ) ||
-      /\b(my|wallet|owned|own|have)\b.*\b(nft|nfts|plot|plots|landplot|landplots)\b/i.test(
-        normalized,
-      );
-    if (explicitNftAccountQuery) return false;
-    return true;
   }
 
   return true;

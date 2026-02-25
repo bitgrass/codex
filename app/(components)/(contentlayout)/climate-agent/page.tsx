@@ -363,11 +363,17 @@ function parseUnstakeLocal(text: string): ParsedIntent | null {
 
 function parseNftsLocal(text: string): ParsedIntent | null {
   const normalized = text.trim().toLowerCase();
-  if (/(buy|purchase|get|own|mint)/i.test(normalized)) return null;
-  const match = normalized.match(
-    /(nft|nfts|collectibles|my nfts|my nft|check my nfts|check my nft|landplot|landplots|plot|plots|my plots|my plot|check my plots|check my plot)/i,
-  );
-  if (!match) return null;
+  if (/(buy|purchase|mint)/i.test(normalized)) return null;
+
+  const explicitOwnershipQuery =
+    /\b(check|show|list|fetch|view|get)\b.*\b(my|wallet|owned|own|have)\b.*\b(nft|nfts|collectibles|landplot|landplots|plot|plots)\b/i.test(
+      normalized,
+    ) ||
+    /\b(my|wallet|owned|own|have)\b.*\b(nft|nfts|collectibles|landplot|landplots|plot|plots)\b/i.test(
+      normalized,
+    );
+
+  if (!explicitOwnershipQuery) return null;
   return { type: "nfts", chainId: 8453 };
 }
 
