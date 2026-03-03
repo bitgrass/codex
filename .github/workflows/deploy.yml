@@ -2,7 +2,7 @@ name: Deploy (OpenNext -> Cloudflare)
 
 on:
   push:
-    branches: ["climate-agent"]
+    branches: ["skill-agent"]
   workflow_dispatch:
 
 jobs:
