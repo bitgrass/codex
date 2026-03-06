@@ -47,7 +47,7 @@
     "@opennextjs/cloudflare": "^1.11.0",
     "@opensea/seaport-js": "^4.0.5",
     "@privy-io/chains": "^0.0.4",
-    "@privy-io/node": "^1.1.2",
+    "@privy-io/node": "^0.10.1",
     "@privy-io/react-auth": "^3.5.0",
     "@privy-io/wagmi": "^2.0.2",
     "@reduxjs/toolkit": "^1.9.7",
