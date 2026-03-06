@@ -12,6 +12,9 @@ description: Agent skill for Bitgrass on Base. Supports chat intent parsing plus
 
 ## Supported Functions
 - Parse user intent using `chat`.
+- Run a single headless onboarding state machine via `/api/agent/privy/otp/onboard`.
+- Start/verify email OTP login for fully headless agent onboarding.
+- Provision and use Privy agentic wallets (session-based user authorization).
 - Buy plots (`Standard`, `Premium`, `Legendary`).
 - Stake and unstake plots by token IDs, tier, or all.
 - Check current and total BCO2 earnings.
@@ -32,6 +35,154 @@ description: Agent skill for Bitgrass on Base. Supports chat intent parsing plus
 - USDC (Base): `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
 
 ## Endpoints
+
+### `POST /api/agent/privy/otp/onboard` (recommended)
+Single endpoint state machine for headless email onboarding in chat.
+
+Use `step: "send"` to send OTP:
+```json
+{
+  "step": "send",
+  "email": "user@example.com"
+}
+```
+
+Use `step: "verify"` to verify OTP and auto-setup (recommended):
+```json
+{
+  "step": "verify",
+  "email": "user@example.com",
+  "code": "123456",
+  "autoSetup": true,
+  "acceptTerms": true,
+  "access": "read_write",
+  "keyName": "My Agent",
+  "enableLlm": false,
+  "createWallet": true,
+  "chainType": "ethereum"
+}
+```
+
+Use `step: "setup"` only if you verified OTP with `autoSetup: false`:
+```json
+{
+  "step": "setup",
+  "userJwt": "privy_user_access_jwt",
+  "acceptTerms": true,
+  "access": "read_write",
+  "keyName": "My Agent",
+  "enableLlm": false,
+  "createWallet": true,
+  "chainType": "ethereum"
+}
+```
+
+Response summary:
+- `step: send` -> OTP dispatched and `nextStep: verify`.
+- `step: verify` -> returns `userJwt`, `userId`, `wallet`, `session`, `preferences` when `autoSetup=true`.
+- `step: setup` -> returns final `wallet`, `session`, and `preferences`.
+
+### `POST /api/agent/privy/otp/send`
+Starts headless email OTP login (no browser flow required).
+
+Request:
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Response:
+- OTP is sent to user email.
+- Agent should ask user for OTP code, then call `/api/agent/privy/otp/verify`.
+
+### `POST /api/agent/privy/otp/verify`
+Verifies OTP, creates Privy user if missing, and can auto-create first wallet.
+
+Request:
+```json
+{
+  "email": "user@example.com",
+  "code": "123456",
+  "createWallet": true,
+  "chainType": "ethereum",
+  "acceptTerms": true,
+  "access": "read_write",
+  "keyName": "My Agent",
+  "enableLlm": false
+}
+```
+
+Response:
+- `userJwt` (Privy access JWT for next calls)
+- `userId`
+- `wallet` (`id`, `address`) when `createWallet=true`
+- optional `session.authorizationKey` and preferences
+
+### `POST /api/agent/privy/agentic/setup`
+First-time setup for agentic wallet access using `userJwt` (typically returned by OTP verify endpoint).
+Creates wallet if missing, authenticates wallet session, and stores user preferences.
+Requires user to have an email linked account (OTP/email login flow).
+
+Request:
+```json
+{
+  "userJwt": "privy_user_access_jwt",
+  "acceptTerms": true,
+  "access": "read_write",
+  "keyName": "My Agent",
+  "enableLlm": false,
+  "chainType": "ethereum",
+  "policyId": "optional_policy_id"
+}
+```
+
+Response:
+- `wallet` (`id`, `address`)
+- `session.authorizationKey` (or encrypted key variant) and `expiresAt`
+- normalized `preferences`
+- For new users: this endpoint creates the first wallet automatically after OTP login succeeds.
+
+### `POST /api/agent/privy/agentic/policy`
+Creates an EVM allowlist policy for agent transaction guardrails.
+
+Request:
+```json
+{
+  "userJwt": "privy_user_access_jwt",
+  "name": "bitgrass-agent-policy",
+  "allowedContractAddresses": [
+    "0x95273ead1dc63b4d809018f10c3e659c5fb0b8a5",
+    "0xAbdD77516765235e3121773bcB4E33984c604D7C"
+  ],
+  "maxValueWei": "350000000000000000",
+  "chainId": 8453
+}
+```
+
+Response:
+- created `policy.id` and rule details.
+
+### `POST /api/agent/privy/agentic/send-transaction`
+Signs and broadcasts an Ethereum transaction via Privy wallet service using user JWT authorization context.
+Requires user to have an email linked account (OTP/email login flow).
+
+Request:
+```json
+{
+  "userJwt": "privy_user_access_jwt",
+  "walletId": "wallet_xxx",
+  "caip2": "eip155:8453",
+  "transaction": {
+    "to": "0x95273ead1dc63b4d809018f10c3e659c5fb0b8a5",
+    "data": "0x...",
+    "value": "0"
+  }
+}
+```
+
+Response:
+- transaction `hash` and `caip2`.
 
 ### `POST /api/agent/chat`
 Parses natural language into an intent object. Does not execute transactions.
@@ -250,6 +401,119 @@ Request:
 - For endpoints returning `transactions[]`, execute in returned order.
 - Use Base chain `8453` for all transactions.
 - Treat all onchain actions as irreversible.
+
+## First-Time Setup
+### Headless Email OTP Login (recommended for agents)
+When user chats with an external agent (OpenClaw, X bot, etc.), do not ask them to open the dApp UI.
+
+### Clear Step-by-Step Script (for external agents)
+Step 1 - Ask email
+1. Ask: "What email should I use to create your Bitgrass wallet?"
+2. Call `/api/agent/privy/otp/onboard` with:
+```json
+{
+  "step": "send",
+  "email": "user@example.com"
+}
+```
+3. Tell user: "I sent a 6-digit OTP to your email. Reply with the OTP."
+
+Step 2 - Collect required preferences before verify
+1. Ask Terms confirmation (must be explicit):
+   - "Do you accept Bitgrass Terms so I can create and operate your wallet?"
+2. Ask access mode:
+   - `read_only` or `read_write`.
+3. Ask optional preferences:
+   - key name (`keyName`) and LLM toggle (`enableLlm`).
+
+Step 3 - Verify OTP + create wallet + finalize setup in one call
+1. Call `/api/agent/privy/otp/onboard`:
+```json
+{
+  "step": "verify",
+  "email": "user@example.com",
+  "code": "123456",
+  "autoSetup": true,
+  "acceptTerms": true,
+  "access": "read_write",
+  "keyName": "My Agent",
+  "enableLlm": false,
+  "createWallet": true,
+  "chainType": "ethereum"
+}
+```
+2. Save:
+   - `userJwt`
+   - `wallet.id`
+   - `wallet.address`
+3. User is now ready for onchain actions.
+
+Step 4 - Execute actions
+1. Build tx via Bitgrass action endpoints.
+2. Broadcast via `/api/agent/privy/agentic/send-transaction` using `userJwt + wallet.id`.
+
+Setup command examples:
+```bash
+curl -X POST "https://dev.bitgrass.com/api/agent/privy/otp/onboard" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "step":"send",
+    "email":"user@example.com"
+  }'
+```
+
+```bash
+curl -X POST "https://dev.bitgrass.com/api/agent/privy/otp/onboard" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "step":"verify",
+    "email":"user@example.com",
+    "code":"123456",
+    "autoSetup":true,
+    "acceptTerms":true,
+    "access":"read_write",
+    "keyName":"My Agent",
+    "enableLlm":false,
+    "createWallet":true,
+    "chainType":"ethereum"
+  }'
+```
+
+```bash
+curl -X POST "https://dev.bitgrass.com/api/agent/privy/otp/onboard" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "step":"setup",
+    "userJwt":"<privy_user_jwt_from_otp_login>",
+    "acceptTerms":true,
+    "access":"read_only",
+    "keyName":"Research Bot",
+    "chainType":"ethereum"
+  }'
+```
+
+Setup options reference:
+- `step`: `send` | `verify` | `setup`.
+- `userJwt`: required for `setup`; returned by `verify`.
+- `acceptTerms`: required for `setup` and for `verify` when `autoSetup=true`.
+- `access`: `read_only` or `read_write`.
+- `keyName`: optional display label.
+- `enableLlm`: optional preference flag.
+- `chainType`: `ethereum` or `solana`.
+- `policyId`: optional policy guardrail id.
+- `autoSetup`: when `true`, `verify` also runs full setup and wallet session auth.
+
+Policy + execution after setup:
+1. Optional: create policy via `/api/agent/privy/agentic/policy`.
+2. Build tx using Bitgrass action endpoints.
+3. Broadcast with `/api/agent/privy/agentic/send-transaction` (`userJwt + walletId`).
+
+Important notes:
+- No pre-existing Privy account is required.
+- First-time users are supported end-to-end.
+- OTP flow is fully headless: user stays in chat with the agent.
+- Transactions are handled by Privy wallet service.
+- Do not attempt wallet setup/transaction before OTP verification.
 
 ## Agent Workflow
 1. Optional: call `/api/agent/chat` to parse user instruction into an intent.
