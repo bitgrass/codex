@@ -164,13 +164,13 @@ Response:
 - created `policy.id` and rule details.
 
 ### `POST /api/agent/privy/agentic/send-transaction`
-Signs and broadcasts an Ethereum transaction via Privy wallet service using user JWT authorization context.
-Requires user to have an email linked account (OTP/email login flow).
+Signs and broadcasts an Ethereum transaction via Privy wallet service.
+Preferred mode for agents: use `authorizationKey` returned during setup. Fallback mode: `userJwt`.
 
 Request:
 ```json
 {
-  "userJwt": "privy_user_access_jwt",
+  "authorizationKey": "privy_authorization_private_key",
   "walletId": "wallet_xxx",
   "caip2": "eip155:8453",
   "transaction": {
@@ -183,6 +183,7 @@ Request:
 
 Response:
 - transaction `hash` and `caip2`.
+- `authorizationMode` (`authorization_key` or `user_jwt`)
 
 ### `POST /api/agent/chat`
 Parses natural language into an intent object. Does not execute transactions.
@@ -444,13 +445,14 @@ Step 3 - Verify OTP + create wallet + finalize setup in one call
 ```
 2. Save:
    - `userJwt`
+   - `session.authorizationKey`
    - `wallet.id`
    - `wallet.address`
 3. User is now ready for onchain actions.
 
 Step 4 - Execute actions
 1. Build tx via Bitgrass action endpoints.
-2. Broadcast via `/api/agent/privy/agentic/send-transaction` using `userJwt + wallet.id`.
+2. Broadcast via `/api/agent/privy/agentic/send-transaction` using `authorizationKey + wallet.id`.
 
 Setup command examples:
 ```bash
@@ -506,7 +508,7 @@ Setup options reference:
 Policy + execution after setup:
 1. Optional: create policy via `/api/agent/privy/agentic/policy`.
 2. Build tx using Bitgrass action endpoints.
-3. Broadcast with `/api/agent/privy/agentic/send-transaction` (`userJwt + walletId`).
+3. Broadcast with `/api/agent/privy/agentic/send-transaction` (`authorizationKey + walletId` preferred, `userJwt + walletId` fallback).
 
 Important notes:
 - No pre-existing Privy account is required.
