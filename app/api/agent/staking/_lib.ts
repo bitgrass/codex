@@ -36,6 +36,7 @@ const ERC20_ABI = [
   "function balanceOf(address account) view returns (uint256)",
   "function transfer(address to, uint256 amount) returns (bool)",
 ];
+const RPC_TIMEOUT_MS = 15_000;
 
 const pools: PoolInfo[] = [
   {
@@ -62,16 +63,49 @@ function getRpcUrl() {
   return process.env.BASE_MAINNET_RPC_URL || process.env.BASE_RPC_URL || "https://mainnet.base.org";
 }
 
+async function rpcRequest<T>(method: string, params: unknown[]): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+  try {
+    const response = await fetch(getRpcUrl(), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params,
+      }),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`RPC ${method} failed (${response.status}): ${body.slice(0, 220)}`);
+    }
+
+    const payload = await response.json().catch(() => null);
+    if (payload?.error) {
+      const message = String(payload.error?.message || "Unknown RPC error");
+      throw new Error(`RPC ${method} error: ${message}`);
+    }
+
+    return payload?.result as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function getMoralisApiKey() {
   const value = process.env.MORALIS_API_KEY || process.env.NEXT_PUBLIC_MORALIS_APY_KEY;
   if (!value) {
     throw new Error("Moralis API key is not configured.");
   }
   return value;
-}
-
-function createProvider() {
-  return new ethers.JsonRpcProvider(getRpcUrl());
 }
 
 export function isValidAddress(value: string) {
@@ -137,11 +171,19 @@ export function groupTokenIdsByPool(tokenIds: number[]) {
 }
 
 export async function getStakeInfoForPool(walletAddress: `0x${string}`, pool: PoolInfo) {
-  const provider = createProvider();
-  const contract = new ethers.Contract(pool.address, STAKING_ABI, provider);
-  const info = await contract.getStakeInfo(walletAddress);
-  const tokens = Array.isArray(info?.[0]) ? (info[0] as bigint[]) : [];
-  const rewards = (info?.[1] as bigint) ?? BigInt(0);
+  const iface = new ethers.Interface(STAKING_ABI);
+  const data = iface.encodeFunctionData("getStakeInfo", [walletAddress]);
+  const raw = await rpcRequest<string>("eth_call", [
+    {
+      to: pool.address,
+      data,
+    },
+    "latest",
+  ]);
+
+  const decoded = iface.decodeFunctionResult("getStakeInfo", raw);
+  const tokens = Array.isArray(decoded?.[0]) ? (decoded[0] as bigint[]) : [];
+  const rewards = (decoded?.[1] as bigint) ?? BigInt(0);
   const tokenIds = tokens
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && id > 0);
@@ -173,9 +215,17 @@ export async function isApprovedForAll(
   ownerAddress: `0x${string}`,
   operatorAddress: `0x${string}`,
 ) {
-  const provider = createProvider();
-  const contract = new ethers.Contract(NFT_COLLECTION_ADDRESS, NFT_APPROVAL_ABI, provider);
-  return Boolean(await contract.isApprovedForAll(ownerAddress, operatorAddress));
+  const iface = new ethers.Interface(NFT_APPROVAL_ABI);
+  const data = iface.encodeFunctionData("isApprovedForAll", [ownerAddress, operatorAddress]);
+  const raw = await rpcRequest<string>("eth_call", [
+    {
+      to: NFT_COLLECTION_ADDRESS,
+      data,
+    },
+    "latest",
+  ]);
+  const decoded = iface.decodeFunctionResult("isApprovedForAll", raw);
+  return Boolean(decoded?.[0]);
 }
 
 export function buildApprovalTransaction(operatorAddress: `0x${string}`) {
@@ -560,11 +610,17 @@ export async function fetchWalletNfts(walletAddress: `0x${string}`) {
 }
 
 export async function fetchWalletBalances(walletAddress: `0x${string}`) {
-  const provider = createProvider();
-  const [ethBalanceWei, usdcBalanceWei] = await Promise.all([
-    provider.getBalance(walletAddress),
-    new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider).balanceOf(walletAddress) as Promise<bigint>,
+  const erc20Iface = new ethers.Interface(ERC20_ABI);
+  const usdcBalanceCall = erc20Iface.encodeFunctionData("balanceOf", [walletAddress]);
+
+  const [ethBalanceHex, usdcBalanceHex] = await Promise.all([
+    rpcRequest<string>("eth_getBalance", [walletAddress, "latest"]),
+    rpcRequest<string>("eth_call", [{ to: USDC_ADDRESS, data: usdcBalanceCall }, "latest"]),
   ]);
+
+  const ethBalanceWei = BigInt(ethBalanceHex || "0x0");
+  const decodedUsdc = erc20Iface.decodeFunctionResult("balanceOf", usdcBalanceHex);
+  const usdcBalanceWei = (decodedUsdc?.[0] as bigint) ?? BigInt(0);
 
   return {
     ethWei: ethBalanceWei,

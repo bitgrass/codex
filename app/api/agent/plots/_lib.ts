@@ -33,9 +33,47 @@ const SEADROP_MINT_ABI = [
 
 const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 const DIGITS_REGEX = /^\d+$/;
+const RPC_TIMEOUT_MS = 15_000;
 
 function getBaseRpcUrl() {
   return process.env.BASE_MAINNET_RPC_URL || process.env.BASE_RPC_URL || "https://mainnet.base.org";
+}
+
+async function rpcRequest<T>(method: string, params: unknown[]): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+  try {
+    const response = await fetch(getBaseRpcUrl(), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params,
+      }),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`RPC ${method} failed (${response.status}): ${body.slice(0, 220)}`);
+    }
+
+    const payload = await response.json().catch(() => null);
+    if (payload?.error) {
+      const message = String(payload.error?.message || "Unknown RPC error");
+      throw new Error(`RPC ${method} error: ${message}`);
+    }
+
+    return payload?.result as T;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getCollectionSlug() {
@@ -200,10 +238,21 @@ export async function getStandardMintQuote(quantity: number) {
     throw new Error("Quantity must be an integer between 1 and 20.");
   }
 
-  const provider = new ethers.JsonRpcProvider(getBaseRpcUrl());
-  const contract = new ethers.Contract(SEADROP_ADDRESS, SEADROP_READ_ABI, provider);
-  const publicDrop = await contract.getPublicDrop(NFT_CONTRACT_ADDRESS);
-  const mintPriceCandidate = publicDrop?.mintPrice ?? (Array.isArray(publicDrop) ? publicDrop[0] : null);
+  const iface = new ethers.Interface(SEADROP_READ_ABI);
+  const callData = iface.encodeFunctionData("getPublicDrop", [NFT_CONTRACT_ADDRESS]);
+  const callResult = await rpcRequest<string>("eth_call", [
+    {
+      to: SEADROP_ADDRESS,
+      data: callData,
+    },
+    "latest",
+  ]);
+
+  const decoded = iface.decodeFunctionResult("getPublicDrop", callResult);
+  const tuple = decoded?.[0];
+  const mintPriceCandidate =
+    (tuple && typeof tuple === "object" && "mintPrice" in tuple ? (tuple as any).mintPrice : null) ??
+    (Array.isArray(tuple) ? tuple[0] : null);
 
   if (typeof mintPriceCandidate !== "bigint") {
     throw new Error("Failed to read mint price from SeaDrop.");
