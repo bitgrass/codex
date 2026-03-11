@@ -1,8 +1,6 @@
 import { isAddress } from "ethers";
 import { z } from "zod";
 import {
-  findFirstWalletForUser,
-  getUserPrimaryEmail,
   getPrivyClient,
   verifyPrivyUserJwt,
 } from "../../_lib";
@@ -11,7 +9,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const RequestSchema = z.object({
-  userJwt: z.string().min(1),
+  userJwt: z.string().min(1).optional(),
+  authorizationKey: z.string().min(1).optional(),
   walletId: z.string().min(1),
   caip2: z.string().min(1).optional(),
   transaction: z.object({
@@ -37,6 +36,31 @@ function normalizeRpcNumeric(value: string | undefined) {
   return value;
 }
 
+function parseChainIdFromCaip2(caip2: string) {
+  const match = /^eip155:(\d+)$/.exec(caip2.trim());
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+function buildAuthorizationContext(input: {
+  userJwt?: string;
+  authorizationKey?: string;
+}) {
+  const authorizationContext: {
+    user_jwts?: string[];
+    authorization_private_keys?: string[];
+  } = {};
+
+  if (input.userJwt) {
+    authorizationContext.user_jwts = [input.userJwt];
+  }
+  if (input.authorizationKey) {
+    authorizationContext.authorization_private_keys = [input.authorizationKey];
+  }
+
+  return authorizationContext;
+}
+
 export async function POST(request: Request) {
   try {
     const json = await request.json().catch(() => null);
@@ -46,7 +70,17 @@ export async function POST(request: Request) {
         {
           ok: false,
           error:
-            "Invalid body. Expected { userJwt, walletId, transaction: { to, data?, value?, nonce?, gasLimit?, gasPrice?, maxFeePerGas?, maxPriorityFeePerGas?, type? }, caip2?, idempotencyKey? }.",
+            "Invalid body. Expected { walletId, userJwt? or authorizationKey?, transaction: { to, data?, value?, nonce?, gasLimit?, gasPrice?, maxFeePerGas?, maxPriorityFeePerGas?, type? }, caip2?, idempotencyKey? }.",
+        },
+        { status: 400 },
+      );
+    }
+
+    if (!parsed.data.userJwt && !parsed.data.authorizationKey) {
+      return Response.json(
+        {
+          ok: false,
+          error: "Provide either userJwt or authorizationKey.",
         },
         { status: 400 },
       );
@@ -59,62 +93,73 @@ export async function POST(request: Request) {
       );
     }
 
-    const verified = await verifyPrivyUserJwt(parsed.data.userJwt);
-    const userId = verified.user_id;
-    const email = await getUserPrimaryEmail(userId);
-    if (!email) {
-      return Response.json(
-        {
-          ok: false,
-          error:
-            "Email OTP login is required. This user has no email account linked in Privy.",
-        },
-        { status: 403 },
-      );
+    const privy = getPrivyClient();
+    const authorizationContext = buildAuthorizationContext({
+      userJwt: parsed.data.userJwt,
+      authorizationKey: parsed.data.authorizationKey,
+    });
+
+    let userId: string | null = null;
+    if (parsed.data.userJwt) {
+      const verified = await verifyPrivyUserJwt(parsed.data.userJwt);
+      userId = verified.user_id;
     }
 
-    const privy = getPrivyClient();
-
-    // Verify ownership: ensure wallet exists for this user on ethereum.
-    let ownedWallet = null as any;
-    for await (const wallet of privy.wallets().list({
-      user_id: userId,
-      chain_type: "ethereum",
-    })) {
-      if (wallet.id === parsed.data.walletId) {
-        ownedWallet = wallet;
-        break;
+    // With userJwt we verify ownership directly. With authorizationKey, Privy validates
+    // the request signature at send time, so we only do wallet existence checks here.
+    let walletExists = false;
+    if (userId) {
+      for await (const wallet of privy.wallets().list({
+        user_id: userId,
+        chain_type: "ethereum",
+      })) {
+        if (wallet.id === parsed.data.walletId) {
+          walletExists = true;
+          break;
+        }
+      }
+    } else {
+      try {
+        await privy.wallets().get(parsed.data.walletId);
+        walletExists = true;
+      } catch {
+        walletExists = false;
       }
     }
 
-    if (!ownedWallet) {
-      const firstWallet = await findFirstWalletForUser({
-        userId,
-        chainType: "ethereum",
-      });
+    if (!walletExists) {
       return Response.json(
         {
           ok: false,
-          error:
-            "walletId is not owned by this user or no ethereum wallet found for user.",
-          firstWalletHint: firstWallet
-            ? { id: firstWallet.id, address: firstWallet.address }
-            : null,
+          error: "walletId was not found.",
         },
-        { status: 403 },
+        { status: 404 },
       );
     }
 
     const tx = parsed.data.transaction;
+    const caip2 = parsed.data.caip2 || "eip155:8453";
+    const chainId = parseChainIdFromCaip2(caip2);
+    if (!chainId) {
+      return Response.json(
+        {
+          ok: false,
+          error: "Invalid caip2. Expected eip155:<chainId>.",
+        },
+        { status: 400 },
+      );
+    }
+
     const result = await privy.wallets().ethereum().sendTransaction(
       parsed.data.walletId,
       {
-        caip2: parsed.data.caip2 || "eip155:8453",
+        caip2,
         params: {
           transaction: {
             to: tx.to,
             data: tx.data,
             value: normalizeRpcNumeric(tx.value),
+            chain_id: chainId,
             nonce: normalizeRpcNumeric(tx.nonce),
             gas_limit: normalizeRpcNumeric(tx.gasLimit),
             gas_price: normalizeRpcNumeric(tx.gasPrice),
@@ -124,18 +169,18 @@ export async function POST(request: Request) {
           },
         },
         idempotency_key: parsed.data.idempotencyKey,
-        authorization_context: {
-          user_jwts: [parsed.data.userJwt],
-        },
+        authorization_context: authorizationContext,
       },
     );
 
     return Response.json({
       ok: true,
-      email,
       walletId: parsed.data.walletId,
+      authorizationMode: parsed.data.authorizationKey ? "authorization_key" : "user_jwt",
+      userId,
       hash: result.hash,
       caip2: result.caip2,
+      chainId,
     });
   } catch (error: any) {
     return Response.json(

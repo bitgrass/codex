@@ -186,7 +186,7 @@ export async function POST(request: Request) {
         step: "send",
         email,
         nextStep: "verify",
-        next: "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
+      next: "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
       });
     }
 
@@ -248,7 +248,8 @@ export async function POST(request: Request) {
         refreshToken: auth.refresh_token ?? null,
         identityToken: auth.identity_token ?? null,
         nextStep: "setup",
-        next: "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }.",
+        next:
+          "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }. Persist session.authorizationKey after setup for future transactions.",
       });
     }
 
@@ -289,7 +290,8 @@ export async function POST(request: Request) {
       identityToken: auth.identity_token ?? null,
       ...setup,
       nextStep: "ready",
-      next: "Use userJwt + wallet.id with /api/agent/privy/agentic/send-transaction.",
+      next:
+        "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction.",
     });
   } catch (error: any) {
     return Response.json(

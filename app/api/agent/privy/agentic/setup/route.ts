@@ -124,7 +124,11 @@ export async function POST(request: Request) {
         readOnly: access === "read_only",
         readWrite: access === "read_write",
         llmGatewayRequested: Boolean(parsed.data.enableLlm),
+        transactionAuthorization:
+          "authorization_key" in session ? "authorization_key" : "user_jwt",
       },
+      next:
+        "Persist session.authorizationKey in the agent and use it with /api/agent/privy/agentic/send-transaction.",
     });
   } catch (error: any) {
     return Response.json(

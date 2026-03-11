@@ -31,12 +31,10 @@ export function getPrivyAuthConfig() {
 
 export function getPrivyClient() {
   const { appId, appSecret, authorizationPrivateKey } = getPrivyServerConfig();
-  return new PrivyClient(appId, appSecret, {
-    walletApi: authorizationPrivateKey
-      ? {
-          authorizationPrivateKey,
-        }
-      : undefined,
+  void authorizationPrivateKey;
+  return new PrivyClient({
+    appId,
+    appSecret,
   });
 }
 

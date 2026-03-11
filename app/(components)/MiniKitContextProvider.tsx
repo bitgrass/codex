@@ -51,8 +51,11 @@ function WagmiWrapper({ children }: { children: ReactNode }) {
   );
 }
 
-// Configure Base chain with official Base RPC
-const baseWithRpc = addRpcUrlOverrideToChain(base, 'https://mainnet.base.org');
+const privyBaseRpcUrl =
+  process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org';
+
+// Configure Base chain for Privy embedded wallets with an overridable RPC.
+const baseWithRpc = addRpcUrlOverrideToChain(base, privyBaseRpcUrl);
 
 function OnchainProviders({ children }: Props) {
   const [mounted, setMounted] = useState(false);

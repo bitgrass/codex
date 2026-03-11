@@ -188,7 +188,7 @@ export async function POST(request: Request) {
         : null,
       preferences,
       next: userJwt
-        ? "Use returned userJwt + wallet.id with /api/agent/privy/agentic/send-transaction."
+        ? "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction."
         : "OTP verified. No userJwt returned; call setup endpoint with a valid userJwt.",
     });
   } catch (error: any) {
