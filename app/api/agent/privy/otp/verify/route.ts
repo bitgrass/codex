@@ -18,6 +18,7 @@ export const dynamic = "force-dynamic";
 const RequestSchema = z.object({
   email: z.string().email(),
   code: z.string().min(4).max(10),
+  token: z.string().min(1).optional(),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
   createWallet: z.boolean().optional(),
   chainType: z.enum(["ethereum", "solana"]).optional(),
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           error:
-            "Invalid body. Expected { email, code, mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
+            "Invalid body. Expected { email, code, token?, mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
         },
         { status: 400 },
       );
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
       email,
       code: parsed.data.code,
       mode: parsed.data.mode,
+      token: parsed.data.token,
     });
 
     const userJwt = pickUserJwt(auth);

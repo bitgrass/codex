@@ -38,13 +38,17 @@ export async function POST(request: Request) {
       );
     }
 
-    await sendPrivyEmailOtp(email, parsed.data.captchaToken);
+    const init = await sendPrivyEmailOtp(email, parsed.data.captchaToken);
     markOtpSent(email);
+    const otpToken =
+      typeof init?.token === "string" && init.token.length > 0 ? init.token : null;
 
     return Response.json({
       ok: true,
       email,
-      next: "Ask user for OTP code from email, then call /api/agent/privy/otp/verify.",
+      otpToken,
+      next:
+        "Ask user for OTP code from email, then call /api/agent/privy/otp/verify with { email, code, token: otpToken }.",
     });
   } catch (error: any) {
     const formatted = buildApiError(error, "Failed to send email OTP.");

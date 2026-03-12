@@ -28,6 +28,7 @@ const VerifyStepSchema = z.object({
   step: z.literal("verify"),
   email: z.string().email(),
   code: z.string().min(4).max(10),
+  token: z.string().min(1).optional(),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
   autoSetup: z.boolean().optional(),
   createWallet: z.boolean().optional(),
@@ -182,15 +183,18 @@ export async function POST(request: Request) {
         );
       }
 
-      await sendPrivyEmailOtp(email, parsed.data.captchaToken);
+      const init = await sendPrivyEmailOtp(email, parsed.data.captchaToken);
       markOtpSent(email);
+      const otpToken =
+        typeof init?.token === "string" && init.token.length > 0 ? init.token : null;
       return Response.json({
         ok: true,
         step: "send",
         email,
+        otpToken,
         nextStep: "verify",
         next:
-          "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
+          "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, token: otpToken, ... }.",
       });
     }
 
@@ -218,6 +222,7 @@ export async function POST(request: Request) {
       email,
       code: parsed.data.code,
       mode: parsed.data.mode,
+      token: parsed.data.token,
     });
 
     const userJwt = pickUserJwt(auth);

@@ -165,11 +165,15 @@ async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, 
 }
 
 export async function sendPrivyEmailOtp(email: string, token?: string) {
-  await postPrivyAuthRoute("/api/v1/passwordless/init", {
+  return postPrivyAuthRoute<PrivyPasswordlessInitResponse>("/api/v1/passwordless/init", {
     email: email.toLowerCase(),
     token,
   });
 }
+
+export type PrivyPasswordlessInitResponse = {
+  token?: string | null;
+};
 
 export type PrivyPasswordlessAuthenticateResponse = {
   token?: string | null;
@@ -184,14 +188,20 @@ export async function verifyPrivyEmailOtp(params: {
   email: string;
   code: string;
   mode?: PasswordlessMode;
+  token?: string;
 }) {
+  const body: Record<string, unknown> = {
+    email: params.email.toLowerCase(),
+    code: params.code.trim(),
+    mode: params.mode ?? "login-or-sign-up",
+  };
+  if (params.token && params.token.length > 0) {
+    body.token = params.token;
+  }
+
   return postPrivyAuthRoute<PrivyPasswordlessAuthenticateResponse>(
     "/api/v1/passwordless/authenticate",
-    {
-      email: params.email.toLowerCase(),
-      code: params.code.trim(),
-      mode: params.mode ?? "login-or-sign-up",
-    },
+    body,
   );
 }
 
