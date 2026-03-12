@@ -2,19 +2,27 @@ import { PrivyClient, verifyAccessToken } from "@privy-io/node";
 
 export type AgentAccessMode = "read_only" | "read_write";
 
+function normalizeUrlOrigin(value: string | undefined) {
+  if (!value) return null;
+
+  try {
+    const origin = new URL(value).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
 export function getPrivyServerConfig() {
   const appId = process.env.PRIVY_APP_ID;
   const appSecret = process.env.PRIVY_APP_SECRET;
-  const verificationKey = process.env.PRIVY_VERIFICATION_KEY;
   const authorizationPrivateKey = process.env.PRIVY_APP_AUTHORIZATION_PRIVATE_KEY;
 
-  if (!appId || !appSecret || !verificationKey) {
-    throw new Error(
-      "Missing Privy env vars. Required: PRIVY_APP_ID, PRIVY_APP_SECRET, PRIVY_VERIFICATION_KEY.",
-    );
+  if (!appId || !appSecret) {
+    throw new Error("Missing Privy env vars. Required: PRIVY_APP_ID, PRIVY_APP_SECRET.");
   }
 
-  return { appId, appSecret, verificationKey, authorizationPrivateKey };
+  return { appId, appSecret, authorizationPrivateKey };
 }
 
 export function getPrivyAuthConfig() {
@@ -25,8 +33,11 @@ export function getPrivyAuthConfig() {
 
   const authBaseUrl = process.env.PRIVY_AUTH_BASE_URL || "https://auth.privy.io";
   const appClientId = process.env.PRIVY_APP_CLIENT_ID || undefined;
+  const appOrigin = normalizeUrlOrigin(
+    process.env.PRIVY_AUTH_ORIGIN || process.env.NEXT_PUBLIC_URL || undefined,
+  );
 
-  return { appId, appClientId, authBaseUrl };
+  return { appId, appClientId, authBaseUrl, appOrigin };
 }
 
 export function getPrivyClient() {
@@ -41,7 +52,7 @@ export function getPrivyClient() {
 type PasswordlessMode = "no-signup" | "login-or-sign-up";
 
 async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, unknown>) {
-  const { appId, appClientId, authBaseUrl } = getPrivyAuthConfig();
+  const { appId, appClientId, authBaseUrl, appOrigin } = getPrivyAuthConfig();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -51,6 +62,10 @@ async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, 
 
   if (appClientId) {
     headers["privy-client-id"] = appClientId;
+  }
+  if (appOrigin) {
+    headers.Origin = appOrigin;
+    headers.Referer = `${appOrigin}/`;
   }
 
   const response = await fetch(`${authBaseUrl.replace(/\/+$/, "")}${path}`, {
@@ -104,7 +119,11 @@ export async function verifyPrivyEmailOtp(params: {
 }
 
 export async function verifyPrivyUserJwt(userJwt: string) {
-  const { appId, verificationKey } = getPrivyServerConfig();
+  const { appId } = getPrivyServerConfig();
+  const verificationKey = process.env.PRIVY_VERIFICATION_KEY;
+  if (!verificationKey) {
+    throw new Error("Missing Privy env vars. Required: PRIVY_VERIFICATION_KEY.");
+  }
   const verified = await verifyAccessToken({
     access_token: userJwt,
     app_id: appId,
