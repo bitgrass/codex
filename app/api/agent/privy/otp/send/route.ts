@@ -49,6 +49,10 @@ export async function POST(request: Request) {
       otpToken,
       next:
         "Ask user for OTP code from email, then call /api/agent/privy/otp/verify with { email, code, token: otpToken }.",
+      notes:
+        otpToken === null
+          ? "Privy did not return an OTP token for this init call. Verify may still succeed without token."
+          : "Include otpToken in verify call for best compatibility.",
     });
   } catch (error: any) {
     const formatted = buildApiError(error, "Failed to send email OTP.");

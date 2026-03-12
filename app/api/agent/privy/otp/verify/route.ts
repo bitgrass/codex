@@ -30,10 +30,12 @@ const RequestSchema = z.object({
 });
 
 function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
+  const isLikelyJwt = (value: string) => value.split(".").length === 3;
+
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
     return payload.privy_access_token;
   }
-  if (payload.token && payload.token.length > 0) {
+  if (payload.token && payload.token.length > 0 && isLikelyJwt(payload.token)) {
     return payload.token;
   }
   return null;

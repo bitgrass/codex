@@ -55,17 +55,19 @@ const SetupStepSchema = z.object({
 const RequestSchema = z.union([SendStepSchema, VerifyStepSchema, SetupStepSchema]);
 
 function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
+  const isLikelyJwt = (value: string) => value.split(".").length === 3;
+
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
     return payload.privy_access_token;
   }
-  if (payload.token && payload.token.length > 0) {
+  if (payload.token && payload.token.length > 0 && isLikelyJwt(payload.token)) {
     return payload.token;
   }
   return null;
 }
 
 async function runSetup(params: {
-  userJwt: string;
+  userJwt?: string;
   userId?: string;
   createWallet?: boolean;
   chainType?: "ethereum" | "solana";
@@ -79,7 +81,12 @@ async function runSetup(params: {
     throw new Error("acceptTerms must be true to complete setup.");
   }
 
-  const userId = params.userId || (await verifyPrivyUserJwt(params.userJwt)).user_id;
+  const userId =
+    params.userId ||
+    (params.userJwt ? (await verifyPrivyUserJwt(params.userJwt)).user_id : null);
+  if (!userId) {
+    throw new Error("Could not resolve userId for setup.");
+  }
   const chainType = params.chainType ?? "ethereum";
   const createWallet = params.createWallet ?? true;
   const access: AgentAccessMode = params.access ?? "read_only";
@@ -106,7 +113,11 @@ async function runSetup(params: {
         policy_ids: params.policyId ? [params.policyId] : undefined,
       });
       walletCreated = true;
-    } else if (params.policyId && !wallet.policy_ids?.includes(params.policyId)) {
+    } else if (
+      params.policyId &&
+      !wallet.policy_ids?.includes(params.policyId) &&
+      params.userJwt
+    ) {
       wallet = await privy.wallets().update(wallet.id, {
         policy_ids: [params.policyId],
         authorization_context: {
@@ -116,9 +127,11 @@ async function runSetup(params: {
     }
   }
 
-  const session = await privy.wallets().authenticateWithJwt({
-    user_jwt: params.userJwt,
-  });
+  const session = params.userJwt
+    ? await privy.wallets().authenticateWithJwt({
+        user_jwt: params.userJwt,
+      })
+    : null;
 
   const preferences = await upsertAgentPreferences({
     userId,
@@ -141,11 +154,11 @@ async function runSetup(params: {
         }
       : null,
     session: {
-      expiresAt: session.expires_at,
+      expiresAt: session?.expires_at ?? null,
       authorizationKey:
-        "authorization_key" in session ? session.authorization_key : undefined,
+        session && "authorization_key" in session ? session.authorization_key : undefined,
       encryptedAuthorizationKey:
-        "encrypted_authorization_key" in session
+        session && "encrypted_authorization_key" in session
           ? session.encrypted_authorization_key
           : undefined,
     },
@@ -195,6 +208,10 @@ export async function POST(request: Request) {
         nextStep: "verify",
         next:
           "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, token: otpToken, ... }.",
+        notes:
+          otpToken === null
+            ? "Privy did not return an OTP token for this init call. Verify may still succeed without token."
+            : "Include otpToken in verify call for best compatibility.",
       });
     }
 
@@ -232,11 +249,11 @@ export async function POST(request: Request) {
       userId = verified?.user_id ? String(verified.user_id) : null;
     }
 
-    if (!userJwt || !userId) {
+    if (!userId) {
       return Response.json(
         {
           ok: false,
-          error: "OTP verified but could not resolve userJwt/userId.",
+          error: "OTP verified but could not resolve userId.",
         },
         { status: 500 },
       );
@@ -258,7 +275,7 @@ export async function POST(request: Request) {
         identityToken: auth.identity_token ?? null,
         nextStep: "setup",
         next:
-          "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }. Persist session.authorizationKey after setup for future transactions.",
+          "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }. Persist session.authorizationKey after setup for future transactions when available.",
       });
     }
 
@@ -301,7 +318,9 @@ export async function POST(request: Request) {
       ...setup,
       nextStep: "ready",
       next:
-        "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction.",
+        setup.session.authorizationKey
+          ? "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction."
+          : "Wallet provisioned. session.authorizationKey was not returned; use userJwt flow or retry setup to mint an authorization key.",
     });
   } catch (error: any) {
     const formatted = buildApiError(error, "Failed to process OTP onboarding.");
