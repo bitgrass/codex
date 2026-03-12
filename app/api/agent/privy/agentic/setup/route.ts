@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  buildApiError,
   findFirstWalletForUser,
   getUserPrimaryEmail,
   getPrivyClient,
@@ -125,14 +124,15 @@ export async function POST(request: Request) {
         readOnly: access === "read_only",
         readWrite: access === "read_write",
         llmGatewayRequested: Boolean(parsed.data.enableLlm),
-        transactionAuthorization:
-          "authorization_key" in session ? "authorization_key" : "user_jwt",
       },
-      next:
-        "Persist session.authorizationKey in the agent and use it with /api/agent/privy/agentic/send-transaction.",
     });
   } catch (error: any) {
-    const formatted = buildApiError(error, "Failed to complete Privy agentic setup.");
-    return Response.json(formatted.body, { status: formatted.status });
+    return Response.json(
+      {
+        ok: false,
+        error: error?.message || "Failed to complete Privy agentic setup.",
+      },
+      { status: 500 },
+    );
   }
 }

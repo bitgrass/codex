@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  buildApiError,
   extractEmailFromPrivyUser,
   findFirstWalletForUser,
   getPrivyClient,
@@ -18,7 +17,6 @@ export const dynamic = "force-dynamic";
 const RequestSchema = z.object({
   email: z.string().email(),
   code: z.string().min(4).max(10),
-  token: z.string().min(1).optional(),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
   createWallet: z.boolean().optional(),
   chainType: z.enum(["ethereum", "solana"]).optional(),
@@ -30,12 +28,10 @@ const RequestSchema = z.object({
 });
 
 function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
-  const isLikelyJwt = (value: string) => value.split(".").length === 3;
-
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
     return payload.privy_access_token;
   }
-  if (payload.token && payload.token.length > 0 && isLikelyJwt(payload.token)) {
+  if (payload.token && payload.token.length > 0) {
     return payload.token;
   }
   return null;
@@ -50,7 +46,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           error:
-            "Invalid body. Expected { email, code, token?, mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
+            "Invalid body. Expected { email, code, mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
         },
         { status: 400 },
       );
@@ -80,7 +76,6 @@ export async function POST(request: Request) {
       email,
       code: parsed.data.code,
       mode: parsed.data.mode,
-      token: parsed.data.token,
     });
 
     const userJwt = pickUserJwt(auth);
@@ -179,11 +174,16 @@ export async function POST(request: Request) {
         : null,
       preferences,
       next: userJwt
-        ? "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction."
+        ? "Use returned userJwt + wallet.id with /api/agent/privy/agentic/send-transaction."
         : "OTP verified. No userJwt returned; call setup endpoint with a valid userJwt.",
     });
   } catch (error: any) {
-    const formatted = buildApiError(error, "Failed to verify email OTP.");
-    return Response.json(formatted.body, { status: formatted.status });
+    return Response.json(
+      {
+        ok: false,
+        error: error?.message || "Failed to verify email OTP.",
+      },
+      { status: 500 },
+    );
   }
 }

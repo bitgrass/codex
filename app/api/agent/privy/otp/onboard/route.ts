@@ -1,12 +1,9 @@
 import { z } from "zod";
 import {
-  buildApiError,
   extractEmailFromPrivyUser,
   findFirstWalletForUser,
-  getOtpRetryAfter,
   getPrivyClient,
   getUserPrimaryEmail,
-  markOtpSent,
   sendPrivyEmailOtp,
   type AgentAccessMode,
   type PrivyPasswordlessAuthenticateResponse,
@@ -28,7 +25,6 @@ const VerifyStepSchema = z.object({
   step: z.literal("verify"),
   email: z.string().email(),
   code: z.string().min(4).max(10),
-  token: z.string().min(1).optional(),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
   autoSetup: z.boolean().optional(),
   createWallet: z.boolean().optional(),
@@ -55,20 +51,17 @@ const SetupStepSchema = z.object({
 const RequestSchema = z.union([SendStepSchema, VerifyStepSchema, SetupStepSchema]);
 
 function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
-  const isLikelyJwt = (value: string) => value.split(".").length === 3;
-
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
     return payload.privy_access_token;
   }
-  if (payload.token && payload.token.length > 0 && isLikelyJwt(payload.token)) {
+  if (payload.token && payload.token.length > 0) {
     return payload.token;
   }
   return null;
 }
 
 async function runSetup(params: {
-  userJwt?: string;
-  userId?: string;
+  userJwt: string;
   createWallet?: boolean;
   chainType?: "ethereum" | "solana";
   policyId?: string;
@@ -81,12 +74,8 @@ async function runSetup(params: {
     throw new Error("acceptTerms must be true to complete setup.");
   }
 
-  const userId =
-    params.userId ||
-    (params.userJwt ? (await verifyPrivyUserJwt(params.userJwt)).user_id : null);
-  if (!userId) {
-    throw new Error("Could not resolve userId for setup.");
-  }
+  const verified = await verifyPrivyUserJwt(params.userJwt);
+  const userId = verified.user_id;
   const chainType = params.chainType ?? "ethereum";
   const createWallet = params.createWallet ?? true;
   const access: AgentAccessMode = params.access ?? "read_only";
@@ -113,11 +102,7 @@ async function runSetup(params: {
         policy_ids: params.policyId ? [params.policyId] : undefined,
       });
       walletCreated = true;
-    } else if (
-      params.policyId &&
-      !wallet.policy_ids?.includes(params.policyId) &&
-      params.userJwt
-    ) {
+    } else if (params.policyId && !wallet.policy_ids?.includes(params.policyId)) {
       wallet = await privy.wallets().update(wallet.id, {
         policy_ids: [params.policyId],
         authorization_context: {
@@ -127,11 +112,9 @@ async function runSetup(params: {
     }
   }
 
-  const session = params.userJwt
-    ? await privy.wallets().authenticateWithJwt({
-        user_jwt: params.userJwt,
-      })
-    : null;
+  const session = await privy.wallets().authenticateWithJwt({
+    user_jwt: params.userJwt,
+  });
 
   const preferences = await upsertAgentPreferences({
     userId,
@@ -154,11 +137,11 @@ async function runSetup(params: {
         }
       : null,
     session: {
-      expiresAt: session?.expires_at ?? null,
+      expiresAt: session.expires_at,
       authorizationKey:
-        session && "authorization_key" in session ? session.authorization_key : undefined,
+        "authorization_key" in session ? session.authorization_key : undefined,
       encryptedAuthorizationKey:
-        session && "encrypted_authorization_key" in session
+        "encrypted_authorization_key" in session
           ? session.encrypted_authorization_key
           : undefined,
     },
@@ -183,35 +166,13 @@ export async function POST(request: Request) {
 
     if (parsed.data.step === "send") {
       const email = parsed.data.email.toLowerCase();
-      const retryAfterSeconds = getOtpRetryAfter(email);
-      if (retryAfterSeconds > 0) {
-        return Response.json(
-          {
-            ok: false,
-            step: "send",
-            error: "OTP was requested too recently. Wait before requesting another code.",
-            retryAfterSeconds,
-          },
-          { status: 429 },
-        );
-      }
-
-      const init = await sendPrivyEmailOtp(email, parsed.data.captchaToken);
-      markOtpSent(email);
-      const otpToken =
-        typeof init?.token === "string" && init.token.length > 0 ? init.token : null;
+      await sendPrivyEmailOtp(email, parsed.data.captchaToken);
       return Response.json({
         ok: true,
         step: "send",
         email,
-        otpToken,
         nextStep: "verify",
-        next:
-          "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, token: otpToken, ... }.",
-        notes:
-          otpToken === null
-            ? "Privy did not return an OTP token for this init call. Verify may still succeed without token."
-            : "Include otpToken in verify call for best compatibility.",
+        next: "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
       });
     }
 
@@ -239,7 +200,6 @@ export async function POST(request: Request) {
       email,
       code: parsed.data.code,
       mode: parsed.data.mode,
-      token: parsed.data.token,
     });
 
     const userJwt = pickUserJwt(auth);
@@ -249,11 +209,11 @@ export async function POST(request: Request) {
       userId = verified?.user_id ? String(verified.user_id) : null;
     }
 
-    if (!userId) {
+    if (!userJwt || !userId) {
       return Response.json(
         {
           ok: false,
-          error: "OTP verified but could not resolve userId.",
+          error: "OTP verified but could not resolve userJwt/userId.",
         },
         { status: 500 },
       );
@@ -274,8 +234,7 @@ export async function POST(request: Request) {
         refreshToken: auth.refresh_token ?? null,
         identityToken: auth.identity_token ?? null,
         nextStep: "setup",
-        next:
-          "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }. Persist session.authorizationKey after setup for future transactions when available.",
+        next: "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }.",
       });
     }
 
@@ -298,7 +257,6 @@ export async function POST(request: Request) {
 
     const setup = await runSetup({
       userJwt,
-      userId,
       createWallet: parsed.data.createWallet,
       chainType: parsed.data.chainType,
       policyId: parsed.data.policyId,
@@ -317,13 +275,15 @@ export async function POST(request: Request) {
       identityToken: auth.identity_token ?? null,
       ...setup,
       nextStep: "ready",
-      next:
-        setup.session.authorizationKey
-          ? "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction."
-          : "Wallet provisioned. session.authorizationKey was not returned; use userJwt flow or retry setup to mint an authorization key.",
+      next: "Use userJwt + wallet.id with /api/agent/privy/agentic/send-transaction.",
     });
   } catch (error: any) {
-    const formatted = buildApiError(error, "Failed to process OTP onboarding.");
-    return Response.json(formatted.body, { status: formatted.status });
+    return Response.json(
+      {
+        ok: false,
+        error: error?.message || "Failed to process OTP onboarding.",
+      },
+      { status: 500 },
+    );
   }
 }
