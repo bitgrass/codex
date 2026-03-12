@@ -2,6 +2,41 @@ import { PrivyClient, verifyAccessToken } from "@privy-io/node";
 
 export type AgentAccessMode = "read_only" | "read_write";
 
+const otpSendState = new Map<string, number>();
+
+export class PrivyRouteError extends Error {
+  status: number;
+  code?: string;
+  details?: unknown;
+  retryAfterSeconds?: number;
+
+  constructor(params: {
+    message: string;
+    status: number;
+    code?: string;
+    details?: unknown;
+    retryAfterSeconds?: number;
+  }) {
+    super(params.message);
+    this.name = "PrivyRouteError";
+    this.status = params.status;
+    this.code = params.code;
+    this.details = params.details;
+    this.retryAfterSeconds = params.retryAfterSeconds;
+  }
+}
+
+function normalizeUrlOrigin(value: string | undefined) {
+  if (!value) return null;
+
+  try {
+    const origin = new URL(value).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
 export function getPrivyServerConfig() {
   const appId = process.env.PRIVY_APP_ID;
   const appSecret = process.env.PRIVY_APP_SECRET;
@@ -25,8 +60,11 @@ export function getPrivyAuthConfig() {
 
   const authBaseUrl = process.env.PRIVY_AUTH_BASE_URL || "https://auth.privy.io";
   const appClientId = process.env.PRIVY_APP_CLIENT_ID || undefined;
+  const appOrigin = normalizeUrlOrigin(
+    process.env.PRIVY_AUTH_ORIGIN || process.env.NEXT_PUBLIC_URL || undefined,
+  );
 
-  return { appId, appClientId, authBaseUrl };
+  return { appId, appClientId, authBaseUrl, appOrigin };
 }
 
 export function getPrivyClient() {
@@ -41,7 +79,7 @@ export function getPrivyClient() {
 type PasswordlessMode = "no-signup" | "login-or-sign-up";
 
 async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, unknown>) {
-  const { appId, appClientId, authBaseUrl } = getPrivyAuthConfig();
+  const { appId, appClientId, authBaseUrl, appOrigin } = getPrivyAuthConfig();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -51,6 +89,10 @@ async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, 
 
   if (appClientId) {
     headers["privy-client-id"] = appClientId;
+  }
+  if (appOrigin) {
+    headers.Origin = appOrigin;
+    headers.Referer = `${appOrigin}/`;
   }
 
   const response = await fetch(`${authBaseUrl.replace(/\/+$/, "")}${path}`, {
@@ -62,11 +104,24 @@ async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, 
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const retryAfterHeader = response.headers.get("retry-after");
+    const retryAfterSeconds =
+      retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Number(retryAfterHeader) : undefined;
+    const code =
+      (payload && typeof payload.code === "string" && payload.code) ||
+      (payload && typeof payload.error_code === "string" && payload.error_code) ||
+      undefined;
     const message =
       (payload && typeof payload.error === "string" && payload.error) ||
       (payload && typeof payload.message === "string" && payload.message) ||
       `Privy auth request failed (${response.status}).`;
-    throw new Error(message);
+    throw new PrivyRouteError({
+      message,
+      status: response.status,
+      code,
+      details: payload,
+      retryAfterSeconds,
+    });
   }
 
   return payload as TResponse;
@@ -111,6 +166,76 @@ export async function verifyPrivyUserJwt(userJwt: string) {
     verification_key: verificationKey,
   });
   return verified;
+}
+
+export function getOtpCooldownSeconds() {
+  const raw = process.env.PRIVY_OTP_COOLDOWN_SECONDS;
+  if (!raw) return 60;
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 60;
+  }
+
+  return Math.floor(parsed);
+}
+
+export function getOtpRetryAfter(email: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const lastSentAt = otpSendState.get(normalizedEmail);
+  if (!lastSentAt) return 0;
+
+  const cooldownMs = getOtpCooldownSeconds() * 1000;
+  const retryAfterMs = lastSentAt + cooldownMs - Date.now();
+  if (retryAfterMs <= 0) {
+    otpSendState.delete(normalizedEmail);
+    return 0;
+  }
+
+  return Math.ceil(retryAfterMs / 1000);
+}
+
+export function markOtpSent(email: string) {
+  otpSendState.set(email.trim().toLowerCase(), Date.now());
+}
+
+export function buildApiError(error: unknown, fallbackMessage: string) {
+  if (error instanceof PrivyRouteError) {
+    return {
+      status: error.status,
+      body: {
+        ok: false,
+        error: error.message,
+        code: error.code ?? null,
+        retryAfterSeconds: error.retryAfterSeconds ?? null,
+        details: error.details ?? null,
+      },
+    };
+  }
+
+  const status =
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as { status?: unknown }).status === "number"
+      ? ((error as { status: number }).status ?? 500)
+      : 500;
+
+  const message =
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+      ? ((error as { message: string }).message ?? fallbackMessage)
+      : fallbackMessage;
+
+  return {
+    status,
+    body: {
+      ok: false,
+      error: message,
+    },
+  };
 }
 
 export function extractEmailFromPrivyUser(user: any) {

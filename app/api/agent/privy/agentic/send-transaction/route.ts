@@ -1,6 +1,7 @@
 import { isAddress } from "ethers";
 import { z } from "zod";
 import {
+  buildApiError,
   getPrivyClient,
   verifyPrivyUserJwt,
 } from "../../_lib";
@@ -183,12 +184,7 @@ export async function POST(request: Request) {
       chainId,
     });
   } catch (error: any) {
-    return Response.json(
-      {
-        ok: false,
-        error: error?.message || "Failed to send transaction with Privy agent wallet.",
-      },
-      { status: 500 },
-    );
+    const formatted = buildApiError(error, "Failed to send transaction with Privy agent wallet.");
+    return Response.json(formatted.body, { status: formatted.status });
   }
 }

@@ -13,6 +13,7 @@ import { POST as unstakeTransactionPost } from "../staking/unstake/transaction/r
 import { POST as transferTransactionPost } from "../transfer/transaction/route";
 import { POST as walletBalancePost } from "../wallet/balance/route";
 import { POST as walletNftsPost } from "../wallet/nfts/route";
+import { POST as privySendTransactionPost } from "../privy/agentic/send-transaction/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,17 +23,15 @@ const RequestSchema = z.object({
   intent: z.record(z.any()).optional(),
   dryRun: z.boolean().optional(),
   walletAddress: z.string().optional(),
+  privy: z
+    .object({
+      walletId: z.string().min(1),
+      userJwt: z.string().min(1).optional(),
+      authorizationKey: z.string().min(1).optional(),
+      caip2: z.string().min(1).optional(),
+    })
+    .optional(),
 });
-
-function isAuthorized(request: Request) {
-  const expected = process.env.BITGRASS_AGENT_API_KEY;
-  if (!expected) return true;
-
-  const headerKey = request.headers.get("x-agent-api-key") || "";
-  const authHeader = request.headers.get("authorization") || "";
-  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  return headerKey === expected || bearer === expected;
-}
 
 function getExecutor() {
   const privateKey = process.env.AGENT_EXECUTOR_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY;
@@ -79,6 +78,43 @@ async function postToRoute(handler: (request: Request) => Promise<Response>, bod
   return { status: res.status, payload };
 }
 
+type PreparedTx = { to: string; data?: `0x${string}`; value?: bigint };
+
+async function sendTransactionsViaPrivy(
+  context: {
+    walletId: string;
+    userJwt?: string;
+    authorizationKey?: string;
+    caip2?: string;
+  },
+  txs: PreparedTx[],
+) {
+  const hashes: string[] = [];
+  for (let i = 0; i < txs.length; i += 1) {
+    const tx = txs[i];
+    const send = await postToRoute(privySendTransactionPost, {
+      walletId: context.walletId,
+      userJwt: context.userJwt,
+      authorizationKey: context.authorizationKey,
+      caip2: context.caip2 || "eip155:8453",
+      idempotencyKey: `${context.walletId}:${Date.now()}:${i}`,
+      transaction: {
+        to: tx.to,
+        data: tx.data,
+        value: (tx.value ?? BigInt(0)).toString(),
+      },
+    });
+
+    if (send.status >= 400 || !send.payload?.ok || !send.payload?.hash) {
+      throw new Error(send.payload?.error || "Failed to send transaction via Privy wallet.");
+    }
+
+    hashes.push(String(send.payload.hash));
+  }
+
+  return hashes;
+}
+
 async function sendTransactions(
   wallet: ethers.Wallet,
   txs: Array<{ to: string; data?: `0x${string}`; value?: bigint }>,
@@ -97,33 +133,57 @@ async function sendTransactions(
 
 export async function POST(request: Request) {
   try {
-    if (!isAuthorized(request)) {
-      return Response.json({ ok: false, error: "Unauthorized." }, { status: 401 });
-    }
-
     const json = await request.json().catch(() => null);
     const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
       return Response.json(
-        { ok: false, error: "Invalid body. Expected { message?, intent?, dryRun?, walletAddress? }." },
+        {
+          ok: false,
+          error:
+            "Invalid body. Expected { message?, intent?, dryRun?, walletAddress?, privy?: { walletId, userJwt? | authorizationKey?, caip2? } }.",
+        },
         { status: 400 },
       );
     }
 
     const dryRun = parsed.data.dryRun ?? false;
-    const { wallet } = getExecutor();
-    const executorAddress = wallet.address;
-    const readWalletAddress = parsed.data.walletAddress || executorAddress;
+    const privyContext = parsed.data.privy || null;
+    let executorWallet: ethers.Wallet | null = null;
+
+    const requireExecutorWallet = () => {
+      if (!executorWallet) {
+        executorWallet = getExecutor().wallet;
+      }
+      return executorWallet;
+    };
+
+    const readWalletAddress = parsed.data.walletAddress || null;
+
+    if (privyContext && !privyContext.userJwt && !privyContext.authorizationKey) {
+      return Response.json(
+        {
+          ok: false,
+          error: "When privy is provided, include either privy.userJwt or privy.authorizationKey.",
+        },
+        { status: 400 },
+      );
+    }
 
     let intent: any = parsed.data.intent || null;
     if (!intent && parsed.data.message) {
+      const chatAddress =
+        parsed.data.walletAddress || "0x0000000000000000000000000000000000000000";
       const chat = await postToRoute(chatPost, {
         message: parsed.data.message,
         walletConnected: true,
-        address: executorAddress,
+        address: chatAddress,
       });
       intent = chat.payload?.intent ?? null;
     }
+
+    const writeSourceWalletAddress = privyContext
+      ? parsed.data.walletAddress
+      : parsed.data.walletAddress;
 
     if (!intent?.type || intent.type === "unknown") {
       return Response.json(
@@ -132,24 +192,69 @@ export async function POST(request: Request) {
       );
     }
 
+    if (
+      privyContext &&
+      ["buy_plot", "stake", "unstake", "claim_bco2"].includes(intent.type) &&
+      (!writeSourceWalletAddress || !ethers.isAddress(writeSourceWalletAddress))
+    ) {
+      return Response.json(
+        {
+          ok: false,
+          error:
+            "walletAddress is required in privy mode for buy/stake/unstake/claim actions.",
+        },
+        { status: 400 },
+      );
+    }
+
     // Read intents
     if (intent.type === "balance") {
+      if (!readWalletAddress || !ethers.isAddress(readWalletAddress)) {
+        return Response.json(
+          { ok: false, error: "walletAddress is required for balance reads." },
+          { status: 400 },
+        );
+      }
       const read = await postToRoute(walletBalancePost, { walletAddress: readWalletAddress });
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
     if (intent.type === "nfts") {
+      if (!readWalletAddress || !ethers.isAddress(readWalletAddress)) {
+        return Response.json(
+          { ok: false, error: "walletAddress is required for NFT reads." },
+          { status: 400 },
+        );
+      }
       const read = await postToRoute(walletNftsPost, { walletAddress: readWalletAddress, limit: 80 });
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
     if (intent.type === "current_earnings") {
+      if (!readWalletAddress || !ethers.isAddress(readWalletAddress)) {
+        return Response.json(
+          { ok: false, error: "walletAddress is required for rewards reads." },
+          { status: 400 },
+        );
+      }
       const read = await postToRoute(rewardsCurrentPost, { walletAddress: readWalletAddress });
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
     if (intent.type === "total_earned") {
+      if (!readWalletAddress || !ethers.isAddress(readWalletAddress)) {
+        return Response.json(
+          { ok: false, error: "walletAddress is required for rewards reads." },
+          { status: 400 },
+        );
+      }
       const read = await postToRoute(rewardsTotalPost, { walletAddress: readWalletAddress });
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
     if (intent.type === "leaderboard_rank") {
+      if (!readWalletAddress || !ethers.isAddress(readWalletAddress)) {
+        return Response.json(
+          { ok: false, error: "walletAddress is required for leaderboard rank." },
+          { status: 400 },
+        );
+      }
       const read = await postToRoute(leaderboardRankPost, { walletAddress: readWalletAddress });
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
@@ -158,15 +263,29 @@ export async function POST(request: Request) {
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
     if (intent.type === "btg_claim") {
+      if (!readWalletAddress || !ethers.isAddress(readWalletAddress)) {
+        return Response.json(
+          { ok: false, error: "walletAddress is required for BTG claim reads." },
+          { status: 400 },
+        );
+      }
       const read = await postToRoute(leaderboardBtgClaimPost, { walletAddress: readWalletAddress });
       return Response.json({ ok: read.status < 400, mode: "read", intent, result: read.payload }, { status: read.status });
     }
 
     // Write intents (execute from executor wallet)
     if (intent.type === "buy_plot") {
+      const buyerAddress =
+        writeSourceWalletAddress || (privyContext ? null : requireExecutorWallet().address);
+      if (!buyerAddress || !ethers.isAddress(buyerAddress)) {
+        return Response.json(
+          { ok: false, intent, error: "walletAddress is required for plot purchases." },
+          { status: 400 },
+        );
+      }
       const built = await postToRoute(plotTransactionPost, {
         tier: intent.tier,
-        buyerAddress: executorAddress,
+        buyerAddress,
       });
       if (built.status >= 400 || !built.payload?.ok) {
         return Response.json({ ok: false, intent, error: built.payload?.error || "Failed to build buy tx." }, { status: built.status || 500 });
@@ -193,20 +312,32 @@ export async function POST(request: Request) {
           value: toBigIntValue(built.payload.transaction.value),
         },
       ];
-      const txHashes = dryRun ? [] : await sendTransactions(wallet, txs);
+      const txHashes = dryRun
+        ? []
+        : privyContext
+          ? await sendTransactionsViaPrivy(privyContext, txs)
+          : await sendTransactions(requireExecutorWallet(), txs);
       return Response.json({
         ok: true,
         mode: dryRun ? "dry_run" : "executed",
         intent,
-        executorAddress,
+        executorAddress: privyContext ? null : requireExecutorWallet().address,
         transactions: txs,
         txHashes,
       });
     }
 
     if (intent.type === "stake") {
+      const walletAddress =
+        writeSourceWalletAddress || (privyContext ? null : requireExecutorWallet().address);
+      if (!walletAddress || !ethers.isAddress(walletAddress)) {
+        return Response.json(
+          { ok: false, intent, error: "walletAddress is required for staking." },
+          { status: 400 },
+        );
+      }
       const built = await postToRoute(stakeTransactionPost, {
-        walletAddress: executorAddress,
+        walletAddress,
         tokenIds: Array.isArray(intent.tokenIds) ? intent.tokenIds : undefined,
         stakeAll: intent.stakeAll ?? !Array.isArray(intent.tokenIds),
         tier: intent.tier,
@@ -223,20 +354,32 @@ export async function POST(request: Request) {
           value: toBigIntValue(tx.value),
         }));
 
-      const txHashes = dryRun ? [] : await sendTransactions(wallet, txs);
+      const txHashes = dryRun
+        ? []
+        : privyContext
+          ? await sendTransactionsViaPrivy(privyContext, txs)
+          : await sendTransactions(requireExecutorWallet(), txs);
       return Response.json({
         ok: true,
         mode: dryRun ? "dry_run" : "executed",
         intent,
-        executorAddress,
+        executorAddress: privyContext ? null : requireExecutorWallet().address,
         transactions: txs,
         txHashes,
       });
     }
 
     if (intent.type === "unstake") {
+      const walletAddress =
+        writeSourceWalletAddress || (privyContext ? null : requireExecutorWallet().address);
+      if (!walletAddress || !ethers.isAddress(walletAddress)) {
+        return Response.json(
+          { ok: false, intent, error: "walletAddress is required for unstaking." },
+          { status: 400 },
+        );
+      }
       const built = await postToRoute(unstakeTransactionPost, {
-        walletAddress: executorAddress,
+        walletAddress,
         tokenIds: Array.isArray(intent.tokenIds) ? intent.tokenIds : undefined,
         unstakeAll: intent.unstakeAll ?? !Array.isArray(intent.tokenIds),
         tier: intent.tier,
@@ -253,19 +396,31 @@ export async function POST(request: Request) {
           value: toBigIntValue(tx.value),
         }));
 
-      const txHashes = dryRun ? [] : await sendTransactions(wallet, txs);
+      const txHashes = dryRun
+        ? []
+        : privyContext
+          ? await sendTransactionsViaPrivy(privyContext, txs)
+          : await sendTransactions(requireExecutorWallet(), txs);
       return Response.json({
         ok: true,
         mode: dryRun ? "dry_run" : "executed",
         intent,
-        executorAddress,
+        executorAddress: privyContext ? null : requireExecutorWallet().address,
         transactions: txs,
         txHashes,
       });
     }
 
     if (intent.type === "claim_bco2") {
-      const built = await postToRoute(rewardsClaimPost, { walletAddress: executorAddress });
+      const walletAddress =
+        writeSourceWalletAddress || (privyContext ? null : requireExecutorWallet().address);
+      if (!walletAddress || !ethers.isAddress(walletAddress)) {
+        return Response.json(
+          { ok: false, intent, error: "walletAddress is required for claim actions." },
+          { status: 400 },
+        );
+      }
+      const built = await postToRoute(rewardsClaimPost, { walletAddress });
       if (built.status >= 400 || !built.payload?.ok) {
         return Response.json({ ok: false, intent, error: built.payload?.error || "Failed to build claim tx." }, { status: built.status || 500 });
       }
@@ -278,12 +433,16 @@ export async function POST(request: Request) {
           value: toBigIntValue(tx.value),
         }));
 
-      const txHashes = dryRun ? [] : await sendTransactions(wallet, txs);
+      const txHashes = dryRun
+        ? []
+        : privyContext
+          ? await sendTransactionsViaPrivy(privyContext, txs)
+          : await sendTransactions(requireExecutorWallet(), txs);
       return Response.json({
         ok: true,
         mode: dryRun ? "dry_run" : "executed",
         intent,
-        executorAddress,
+        executorAddress: privyContext ? null : requireExecutorWallet().address,
         transactions: txs,
         txHashes,
       });
@@ -311,12 +470,16 @@ export async function POST(request: Request) {
           value: toBigIntValue(tx.value),
         },
       ];
-      const txHashes = dryRun ? [] : await sendTransactions(wallet, txs);
+      const txHashes = dryRun
+        ? []
+        : privyContext
+          ? await sendTransactionsViaPrivy(privyContext, txs)
+          : await sendTransactions(requireExecutorWallet(), txs);
       return Response.json({
         ok: true,
         mode: dryRun ? "dry_run" : "executed",
         intent,
-        executorAddress,
+        executorAddress: privyContext ? null : requireExecutorWallet().address,
         transactions: txs,
         txHashes,
       });
@@ -351,4 +514,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

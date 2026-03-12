@@ -1,9 +1,12 @@
 import { z } from "zod";
 import {
+  buildApiError,
   extractEmailFromPrivyUser,
   findFirstWalletForUser,
+  getOtpRetryAfter,
   getPrivyClient,
   getUserPrimaryEmail,
+  markOtpSent,
   sendPrivyEmailOtp,
   type AgentAccessMode,
   type PrivyPasswordlessAuthenticateResponse,
@@ -49,16 +52,6 @@ const SetupStepSchema = z.object({
 });
 
 const RequestSchema = z.union([SendStepSchema, VerifyStepSchema, SetupStepSchema]);
-
-function isAuthorized(request: Request) {
-  const expected = process.env.BITGRASS_AGENT_API_KEY;
-  if (!expected) return true;
-
-  const headerKey = request.headers.get("x-agent-api-key") || "";
-  const authHeader = request.headers.get("authorization") || "";
-  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  return headerKey === expected || bearer === expected;
-}
 
 function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
@@ -161,10 +154,6 @@ async function runSetup(params: {
 
 export async function POST(request: Request) {
   try {
-    if (!isAuthorized(request)) {
-      return Response.json({ ok: false, error: "Unauthorized." }, { status: 401 });
-    }
-
     const json = await request.json().catch(() => null);
     const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
@@ -180,13 +169,28 @@ export async function POST(request: Request) {
 
     if (parsed.data.step === "send") {
       const email = parsed.data.email.toLowerCase();
+      const retryAfterSeconds = getOtpRetryAfter(email);
+      if (retryAfterSeconds > 0) {
+        return Response.json(
+          {
+            ok: false,
+            step: "send",
+            error: "OTP was requested too recently. Wait before requesting another code.",
+            retryAfterSeconds,
+          },
+          { status: 429 },
+        );
+      }
+
       await sendPrivyEmailOtp(email, parsed.data.captchaToken);
+      markOtpSent(email);
       return Response.json({
         ok: true,
         step: "send",
         email,
         nextStep: "verify",
-      next: "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
+        next:
+          "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
       });
     }
 
@@ -294,12 +298,7 @@ export async function POST(request: Request) {
         "Persist session.authorizationKey and use authorizationKey + wallet.id with /api/agent/privy/agentic/send-transaction.",
     });
   } catch (error: any) {
-    return Response.json(
-      {
-        ok: false,
-        error: error?.message || "Failed to process OTP onboarding.",
-      },
-      { status: 500 },
-    );
+    const formatted = buildApiError(error, "Failed to process OTP onboarding.");
+    return Response.json(formatted.body, { status: formatted.status });
   }
 }

@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { sendPrivyEmailOtp } from "../../_lib";
+import {
+  buildApiError,
+  getOtpRetryAfter,
+  markOtpSent,
+  sendPrivyEmailOtp,
+} from "../../_lib";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,22 +14,8 @@ const RequestSchema = z.object({
   captchaToken: z.string().min(1).optional(),
 });
 
-function isAuthorized(request: Request) {
-  const expected = process.env.BITGRASS_AGENT_API_KEY;
-  if (!expected) return true;
-
-  const headerKey = request.headers.get("x-agent-api-key") || "";
-  const authHeader = request.headers.get("authorization") || "";
-  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  return headerKey === expected || bearer === expected;
-}
-
 export async function POST(request: Request) {
   try {
-    if (!isAuthorized(request)) {
-      return Response.json({ ok: false, error: "Unauthorized." }, { status: 401 });
-    }
-
     const json = await request.json().catch(() => null);
     const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
@@ -35,7 +26,20 @@ export async function POST(request: Request) {
     }
 
     const email = parsed.data.email.toLowerCase();
+    const retryAfterSeconds = getOtpRetryAfter(email);
+    if (retryAfterSeconds > 0) {
+      return Response.json(
+        {
+          ok: false,
+          error: "OTP was requested too recently. Wait before requesting another code.",
+          retryAfterSeconds,
+        },
+        { status: 429 },
+      );
+    }
+
     await sendPrivyEmailOtp(email, parsed.data.captchaToken);
+    markOtpSent(email);
 
     return Response.json({
       ok: true,
@@ -43,12 +47,7 @@ export async function POST(request: Request) {
       next: "Ask user for OTP code from email, then call /api/agent/privy/otp/verify.",
     });
   } catch (error: any) {
-    return Response.json(
-      {
-        ok: false,
-        error: error?.message || "Failed to send email OTP.",
-      },
-      { status: 500 },
-    );
+    const formatted = buildApiError(error, "Failed to send email OTP.");
+    return Response.json(formatted.body, { status: formatted.status });
   }
 }

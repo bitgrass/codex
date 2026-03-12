@@ -1,6 +1,6 @@
 import { isAddress } from "ethers";
 import { z } from "zod";
-import { getPrivyClient, verifyPrivyUserJwt } from "../../_lib";
+import { buildApiError, getPrivyClient, verifyPrivyUserJwt } from "../../_lib";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,13 +103,7 @@ export async function POST(request: Request) {
       },
     });
   } catch (error: any) {
-    return Response.json(
-      {
-        ok: false,
-        error: error?.message || "Failed to create Privy policy.",
-      },
-      { status: 500 },
-    );
+    const formatted = buildApiError(error, "Failed to create Privy policy.");
+    return Response.json(formatted.body, { status: formatted.status });
   }
 }
-

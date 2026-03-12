@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  buildApiError,
   extractEmailFromPrivyUser,
   findFirstWalletForUser,
   getPrivyClient,
@@ -27,16 +28,6 @@ const RequestSchema = z.object({
   enableLlm: z.boolean().optional(),
 });
 
-function isAuthorized(request: Request) {
-  const expected = process.env.BITGRASS_AGENT_API_KEY;
-  if (!expected) return true;
-
-  const headerKey = request.headers.get("x-agent-api-key") || "";
-  const authHeader = request.headers.get("authorization") || "";
-  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  return headerKey === expected || bearer === expected;
-}
-
 function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
     return payload.privy_access_token;
@@ -49,10 +40,6 @@ function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
 
 export async function POST(request: Request) {
   try {
-    if (!isAuthorized(request)) {
-      return Response.json({ ok: false, error: "Unauthorized." }, { status: 401 });
-    }
-
     const json = await request.json().catch(() => null);
     const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
@@ -192,12 +179,7 @@ export async function POST(request: Request) {
         : "OTP verified. No userJwt returned; call setup endpoint with a valid userJwt.",
     });
   } catch (error: any) {
-    return Response.json(
-      {
-        ok: false,
-        error: error?.message || "Failed to verify email OTP.",
-      },
-      { status: 500 },
-    );
+    const formatted = buildApiError(error, "Failed to verify email OTP.");
+    return Response.json(formatted.body, { status: formatted.status });
   }
 }
