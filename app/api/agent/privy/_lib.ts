@@ -26,6 +26,12 @@ export class PrivyRouteError extends Error {
   }
 }
 
+function listMissingEnv(required: Array<[name: string, value: string | undefined]>) {
+  return required
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+}
+
 function normalizeUrlOrigin(value: string | undefined) {
   if (!value) return null;
 
@@ -37,19 +43,50 @@ function normalizeUrlOrigin(value: string | undefined) {
   }
 }
 
-export function getPrivyServerConfig() {
+type PrivyServerConfig = {
+  appId: string;
+  appSecret: string;
+  authorizationPrivateKey?: string;
+};
+
+type PrivyVerificationConfig = {
+  appId: string;
+  verificationKey: string;
+};
+
+export function getPrivyServerConfig(): PrivyServerConfig {
   const appId = process.env.PRIVY_APP_ID;
   const appSecret = process.env.PRIVY_APP_SECRET;
-  const verificationKey = process.env.PRIVY_VERIFICATION_KEY;
   const authorizationPrivateKey = process.env.PRIVY_APP_AUTHORIZATION_PRIVATE_KEY;
 
-  if (!appId || !appSecret || !verificationKey) {
-    throw new Error(
-      "Missing Privy env vars. Required: PRIVY_APP_ID, PRIVY_APP_SECRET, PRIVY_VERIFICATION_KEY.",
-    );
+  const required: Array<[string, string | undefined]> = [
+    ["PRIVY_APP_ID", appId],
+    ["PRIVY_APP_SECRET", appSecret],
+  ];
+
+  const missing = listMissingEnv(required);
+  if (missing.length > 0) {
+    throw new Error(`Missing Privy env vars: ${missing.join(", ")}`);
   }
 
-  return { appId, appSecret, verificationKey, authorizationPrivateKey };
+  return {
+    appId: appId as string,
+    appSecret: appSecret as string,
+    authorizationPrivateKey,
+  };
+}
+
+function getPrivyVerificationConfig(): PrivyVerificationConfig {
+  const { appId } = getPrivyServerConfig();
+  const verificationKey = process.env.PRIVY_VERIFICATION_KEY;
+  if (!verificationKey) {
+    throw new Error("Missing Privy env vars: PRIVY_VERIFICATION_KEY");
+  }
+
+  return {
+    appId,
+    verificationKey,
+  };
 }
 
 export function getPrivyAuthConfig() {
@@ -159,7 +196,7 @@ export async function verifyPrivyEmailOtp(params: {
 }
 
 export async function verifyPrivyUserJwt(userJwt: string) {
-  const { appId, verificationKey } = getPrivyServerConfig();
+  const { appId, verificationKey } = getPrivyVerificationConfig();
   const verified = await verifyAccessToken({
     access_token: userJwt,
     app_id: appId,
