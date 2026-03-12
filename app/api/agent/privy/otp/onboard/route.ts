@@ -65,6 +65,7 @@ function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
 
 async function runSetup(params: {
   userJwt: string;
+  userId?: string;
   createWallet?: boolean;
   chainType?: "ethereum" | "solana";
   policyId?: string;
@@ -77,8 +78,7 @@ async function runSetup(params: {
     throw new Error("acceptTerms must be true to complete setup.");
   }
 
-  const verified = await verifyPrivyUserJwt(params.userJwt);
-  const userId = verified.user_id;
+  const userId = params.userId || (await verifyPrivyUserJwt(params.userJwt)).user_id;
   const chainType = params.chainType ?? "ethereum";
   const createWallet = params.createWallet ?? true;
   const access: AgentAccessMode = params.access ?? "read_only";
@@ -276,6 +276,7 @@ export async function POST(request: Request) {
 
     const setup = await runSetup({
       userJwt,
+      userId,
       createWallet: parsed.data.createWallet,
       chainType: parsed.data.chainType,
       policyId: parsed.data.policyId,
