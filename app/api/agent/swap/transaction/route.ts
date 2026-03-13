@@ -79,7 +79,7 @@ export async function POST(request: Request) {
           amount: amountRaw,
           amountReference: "from",
           slippagePercentage: slippage,
-          taker: parsed.data.walletAddress,
+          fromAddress: parsed.data.walletAddress,
           v2Enabled: true,
         },
       ],
