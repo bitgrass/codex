@@ -390,28 +390,52 @@ export async function upsertAgentPreferences(params: {
 }) {
   const privy = getPrivyClient();
   const user = await privy.users()._get(params.userId);
-  const existingCustom =
+  const existingCustomRaw =
     user && typeof (user as any).custom_metadata === "object" && (user as any).custom_metadata
       ? ((user as any).custom_metadata as Record<string, any>)
       : {};
 
+  // Privy custom_metadata values must be primitives; drop nested objects/arrays.
+  const existingCustom: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(existingCustomRaw)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      existingCustom[key] = value;
+    }
+  }
+
+  const legacyAgent =
+    existingCustomRaw.bitgrass_agent && typeof existingCustomRaw.bitgrass_agent === "object"
+      ? (existingCustomRaw.bitgrass_agent as Record<string, any>)
+      : null;
+
+  const keyName =
+    params.keyName ||
+    (typeof existingCustom.bitgrass_agent_key_name === "string"
+      ? existingCustom.bitgrass_agent_key_name
+      : null) ||
+    (legacyAgent && typeof legacyAgent.keyName === "string" ? legacyAgent.keyName : null) ||
+    null;
+
   const updated = {
     ...existingCustom,
-    bitgrass_agent: {
-      ...(existingCustom.bitgrass_agent || {}),
-      access: params.access,
-      keyName: params.keyName || existingCustom.bitgrass_agent?.keyName || null,
-      enableLlm: Boolean(params.enableLlm),
-      acceptTerms: Boolean(params.acceptTerms),
-      updatedAt: new Date().toISOString(),
-    },
+    bitgrass_agent_access: params.access,
+    bitgrass_agent_enable_llm: Boolean(params.enableLlm),
+    bitgrass_agent_accept_terms: Boolean(params.acceptTerms),
+    bitgrass_agent_updated_at: new Date().toISOString(),
+    ...(keyName ? { bitgrass_agent_key_name: keyName } : {}),
   };
 
   await privy.users().setCustomMetadata(params.userId, {
     custom_metadata: updated,
   });
 
-  return updated.bitgrass_agent;
+  return {
+    access: params.access,
+    keyName,
+    enableLlm: Boolean(params.enableLlm),
+    acceptTerms: Boolean(params.acceptTerms),
+    updatedAt: updated.bitgrass_agent_updated_at,
+  };
 }
 
 export async function getUserPrimaryEmail(userId: string) {
