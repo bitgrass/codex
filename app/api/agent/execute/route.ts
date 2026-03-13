@@ -11,6 +11,7 @@ import { POST as leaderboardBtgClaimPost } from "../leaderboard/btg-claim/route"
 import { POST as stakeTransactionPost } from "../staking/stake/transaction/route";
 import { POST as unstakeTransactionPost } from "../staking/unstake/transaction/route";
 import { POST as transferTransactionPost } from "../transfer/transaction/route";
+import { POST as swapTransactionPost } from "../swap/transaction/route";
 import { POST as walletBalancePost } from "../wallet/balance/route";
 import { POST as walletNftsPost } from "../wallet/nfts/route";
 import { POST as privySendTransactionPost } from "../privy/agentic/send-transaction/route";
@@ -486,14 +487,69 @@ export async function POST(request: Request) {
     }
 
     if (intent.type === "swap") {
-      return Response.json(
-        {
-          ok: false,
-          intent,
-          error: "Swap direct execution is not supported here because only quote endpoint is available.",
-        },
-        { status: 400 },
-      );
+      const swapWalletAddress =
+        writeSourceWalletAddress || (privyContext ? null : requireExecutorWallet().address);
+      if (!swapWalletAddress || !ethers.isAddress(swapWalletAddress)) {
+        return Response.json(
+          { ok: false, intent, error: "walletAddress is required for swaps." },
+          { status: 400 },
+        );
+      }
+
+      const built = await postToRoute(swapTransactionPost, {
+        amount: intent.amount,
+        fromSymbol: intent.fromSymbol,
+        toSymbol: intent.toSymbol,
+        walletAddress: swapWalletAddress,
+      });
+      if (built.status >= 400 || !built.payload?.ok) {
+        return Response.json(
+          { ok: false, intent, error: built.payload?.error || "Failed to build swap tx." },
+          { status: built.status || 500 },
+        );
+      }
+
+      const txs: PreparedTx[] = [];
+
+      // Run approval first if selling ERC-20 (e.g. USDC → ETH)
+      if (built.payload.approveTransaction?.data) {
+        const approveTx = built.payload.approveTransaction;
+        txs.push({
+          to: String(approveTx.to),
+          data: approveTx.data as `0x${string}`,
+          value: toBigIntValue(approveTx.value ?? "0x0"),
+        });
+      }
+
+      const swapTx = built.payload.transaction;
+      if (!isHexData(swapTx?.data)) {
+        return Response.json(
+          { ok: false, intent, error: "Invalid swap transaction data from CDP." },
+          { status: 422 },
+        );
+      }
+
+      txs.push({
+        to: String(swapTx.to),
+        data: swapTx.data as `0x${string}`,
+        value: toBigIntValue(swapTx.value ?? "0x0"),
+      });
+
+      const txHashes = dryRun
+        ? []
+        : privyContext
+          ? await sendTransactionsViaPrivy(privyContext, txs)
+          : await sendTransactions(requireExecutorWallet(), txs);
+
+      return Response.json({
+        ok: true,
+        mode: dryRun ? "dry_run" : "executed",
+        intent,
+        executorAddress: privyContext ? null : requireExecutorWallet().address,
+        transactions: txs,
+        txHashes,
+        quote: built.payload.quote ?? null,
+      });
     }
 
     return Response.json(

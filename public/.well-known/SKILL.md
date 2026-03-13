@@ -1,6 +1,6 @@
 ---
 name: bitgrass-agent-actions
-description: Agent skill for Bitgrass on Base. Supports chat intent parsing plus dedicated endpoints for plot purchase, staking, unstaking, BCO2 rewards, wallet reads, leaderboard reads, transfer tx building, and swap quotes.
+description: Agent skill for Bitgrass on Base. Supports chat intent parsing plus dedicated endpoints for plot purchase, staking, unstaking, BCO2 rewards, wallet reads, leaderboard reads, transfer tx building, and executable ETH/USDC swap transactions.
 ---
 
 # Bitgrass Agent Actions Skill
@@ -22,7 +22,7 @@ description: Agent skill for Bitgrass on Base. Supports chat intent parsing plus
 - Check wallet balances and NFT plots.
 - Check leaderboard rank, top users, and BTG claim amount.
 - Build ETH/USDC transfer transactions.
-- Fetch ETH/USDC swap quotes.
+- Build and execute ETH ↔ USDC swap transactions (including ERC-20 approval when needed).
 
 ## Contracts
 - NFT contract: `0x95273ead1dc63b4d809018f10c3e659c5fb0b8a5`
@@ -206,8 +206,29 @@ Response:
 - `reply` text.
 - `intent` object (`swap`, `transfer`, `balance`, `nfts`, `current_earnings`, `total_earned`, `claim_bco2`, `leaderboard_rank`, `leaderboard_top`, `btg_claim`, `stake`, `unstake`, `buy_plot`, or `unknown`).
 
+### `POST /api/agent/swap/transaction`
+Builds a fully executable ETH ↔ USDC swap transaction via CDP on Base.
+Includes optional `approveTransaction` when selling ERC-20 (e.g. USDC → ETH).
+Execute `approveTransaction` first (if present), then `transaction`.
+
+Request:
+```json
+{
+  "amount": "0.01",
+  "fromSymbol": "ETH",
+  "toSymbol": "USDC",
+  "walletAddress": "0xYourAgentWalletAddress"
+}
+```
+
+Response:
+- `transaction.to`, `transaction.data`, `transaction.value` — the swap tx to send.
+- `approveTransaction` — ERC-20 approval tx (only when selling USDC); send this first.
+- `quote` — `toAmount`, `minToAmount`, `fromAmountUSD`, `toAmountUSD`.
+
 ### `POST /api/agent/swap/quote`
-Fetches a swap quote for `ETH <-> USDC`.
+Fetches a price quote only for `ETH <-> USDC`. Does not return an executable transaction.
+Use `/api/agent/swap/transaction` when you need to execute a swap.
 
 Request:
 ```json
