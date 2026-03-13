@@ -129,6 +129,7 @@ export async function sendPrivyEmailOtp(email: string, token?: string) {
 
 export type PrivyPasswordlessAuthenticateResponse = {
   token?: string | null;
+  access_token?: string | null;
   privy_access_token?: string | null;
   refresh_token?: string | null;
   identity_token?: string;
@@ -163,6 +164,43 @@ export async function verifyPrivyUserJwt(userJwt: string) {
     verification_key: verificationKey,
   });
   return verified;
+}
+
+type ResolvedAuthIdentity = {
+  userJwt: string | null;
+  userId: string | null;
+  source: "privy_access_token" | "access_token" | "token" | null;
+};
+
+export async function resolveVerifiedAuthIdentity(
+  payload: PrivyPasswordlessAuthenticateResponse,
+): Promise<ResolvedAuthIdentity> {
+  const candidates: Array<{ source: ResolvedAuthIdentity["source"]; value: string | null | undefined }> =
+    [
+      { source: "privy_access_token", value: payload.privy_access_token },
+      { source: "access_token", value: payload.access_token },
+      { source: "token", value: payload.token },
+    ];
+
+  for (const candidate of candidates) {
+    const value = candidate.value;
+    if (typeof value !== "string" || value.length === 0) continue;
+    const verified = await verifyPrivyUserJwt(value).catch(() => null);
+    if (verified?.user_id) {
+      return {
+        userJwt: value,
+        userId: String(verified.user_id),
+        source: candidate.source,
+      };
+    }
+  }
+
+  const fallbackUserId = payload?.user?.id ? String(payload.user.id) : null;
+  return {
+    userJwt: null,
+    userId: fallbackUserId,
+    source: null,
+  };
 }
 
 // ─── Wallet session auth: works with both old and new @privy-io/node ──────────

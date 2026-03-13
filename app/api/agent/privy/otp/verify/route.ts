@@ -5,12 +5,11 @@ import {
   extractEmailFromPrivyUser,
   findFirstWalletForUser,
   getUserPrimaryEmail,
+  resolveVerifiedAuthIdentity,
   type AgentAccessMode,
-  type PrivyPasswordlessAuthenticateResponse,
   updateWalletPolicy,
   upsertAgentPreferences,
   verifyPrivyEmailOtp,
-  verifyPrivyUserJwt,
   getPrivyClient,
 } from "../../_lib";
 
@@ -29,16 +28,6 @@ const RequestSchema = z.object({
   keyName: z.string().min(1).max(64).optional(),
   enableLlm: z.boolean().optional(),
 });
-
-function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
-  if (payload.privy_access_token && payload.privy_access_token.length > 0) {
-    return payload.privy_access_token;
-  }
-  if (payload.token && payload.token.length > 0) {
-    return payload.token;
-  }
-  return null;
-}
 
 export async function POST(request: Request) {
   try {
@@ -81,12 +70,9 @@ export async function POST(request: Request) {
       mode: parsed.data.mode,
     });
 
-    const userJwt = pickUserJwt(auth);
-    let userId = auth.user?.id ? String(auth.user.id) : null;
-    if (!userId && userJwt) {
-      const verified = await verifyPrivyUserJwt(userJwt).catch(() => null);
-      userId = verified?.user_id ? String(verified.user_id) : null;
-    }
+    const identity = await resolveVerifiedAuthIdentity(auth);
+    const userJwt = identity.userJwt;
+    const userId = identity.userId;
 
     if (!userId) {
       return Response.json(
@@ -145,6 +131,7 @@ export async function POST(request: Request) {
       isNewUser: Boolean(auth.is_new_user),
       userId,
       userJwt,
+      tokenSource: identity.source,
       refreshToken: auth.refresh_token ?? null,
       identityToken: auth.identity_token ?? null,
       wallet: wallet
@@ -166,7 +153,7 @@ export async function POST(request: Request) {
       preferences,
       next: userJwt
         ? "Use returned userJwt + wallet.id with /api/agent/privy/agentic/send-transaction."
-        : "OTP verified. No userJwt returned; call setup endpoint with a valid userJwt.",
+        : "OTP verified, but no verifiable access token was returned. Retry verify with a fresh OTP.",
     });
   } catch (error: any) {
     const privyStatus = error?.privyStatus;

@@ -6,9 +6,9 @@ import {
   findFirstWalletForUser,
   getPrivyClient,
   getUserPrimaryEmail,
+  resolveVerifiedAuthIdentity,
   sendPrivyEmailOtp,
   type AgentAccessMode,
-  type PrivyPasswordlessAuthenticateResponse,
   updateWalletPolicy,
   upsertAgentPreferences,
   verifyPrivyEmailOtp,
@@ -52,16 +52,6 @@ const SetupStepSchema = z.object({
 });
 
 const RequestSchema = z.union([SendStepSchema, VerifyStepSchema, SetupStepSchema]);
-
-function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
-  if (payload.privy_access_token && payload.privy_access_token.length > 0) {
-    return payload.privy_access_token;
-  }
-  if (payload.token && payload.token.length > 0) {
-    return payload.token;
-  }
-  return null;
-}
 
 async function runSetup(params: {
   userJwt: string;
@@ -196,18 +186,15 @@ export async function POST(request: Request) {
       mode: parsed.data.mode,
     });
 
-    const userJwt = pickUserJwt(auth);
-    let userId = auth.user?.id ? String(auth.user.id) : null;
-    if (!userId && userJwt) {
-      const verified = await verifyPrivyUserJwt(userJwt).catch(() => null);
-      userId = verified?.user_id ? String(verified.user_id) : null;
-    }
+    const identity = await resolveVerifiedAuthIdentity(auth);
+    const userJwt = identity.userJwt;
+    const userId = identity.userId;
 
-    if (!userJwt || !userId) {
+    if (!userId) {
       return Response.json(
         {
           ok: false,
-          error: "OTP verified but could not resolve userJwt/userId.",
+          error: "OTP verified but could not resolve userId.",
         },
         { status: 500 },
       );
@@ -225,11 +212,30 @@ export async function POST(request: Request) {
         email: linkedEmail,
         userId,
         userJwt,
+        tokenSource: identity.source,
         refreshToken: auth.refresh_token ?? null,
         identityToken: auth.identity_token ?? null,
         nextStep: "setup",
         next: "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }.",
       });
+    }
+
+    if (!userJwt) {
+      return Response.json(
+        {
+          ok: false,
+          step: "verify",
+          error:
+            "OTP verified but Privy did not return a verifiable access token. Cannot run autoSetup.",
+          userId,
+          tokenSource: identity.source,
+          refreshToken: auth.refresh_token ?? null,
+          identityToken: auth.identity_token ?? null,
+          hint:
+            "Retry OTP verify once. If it persists, this is an upstream Privy auth response issue for this app configuration.",
+        },
+        { status: 502 },
+      );
     }
 
     if (parsed.data.acceptTerms !== true) {
@@ -265,6 +271,7 @@ export async function POST(request: Request) {
       step: "verify",
       isNewUser: Boolean(auth.is_new_user),
       userJwt,
+      tokenSource: identity.source,
       refreshToken: auth.refresh_token ?? null,
       identityToken: auth.identity_token ?? null,
       ...setup,
