@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
 
 const RequestSchema = z.object({
   email: z.string().email(),
-  code: z.string().min(4).max(10),
+  code: z.string().regex(/^\d{6}$/),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
   createWallet: z.boolean().optional(),
   chainType: z.enum(["ethereum", "solana"]).optional(),
@@ -30,6 +30,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  let attemptedEmail: string | null = null;
   try {
     const json = await request.json().catch(() => null);
     const parsed = RequestSchema.safeParse(json);
@@ -38,13 +39,14 @@ export async function POST(request: Request) {
         {
           ok: false,
           error:
-            "Invalid body. Expected { email, code, mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
+            "Invalid body. Expected { email, code(6 digits), mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
         },
         { status: 400 },
       );
     }
 
     const email = parsed.data.email.toLowerCase();
+    attemptedEmail = email;
     const chainType = parsed.data.chainType ?? "ethereum";
     const shouldCreateWallet = parsed.data.createWallet ?? true;
     const setupRequested =
@@ -158,6 +160,35 @@ export async function POST(request: Request) {
   } catch (error: any) {
     const privyStatus = error?.privyStatus;
     const privyPayload = error?.privyPayload;
+    const privyCode =
+      privyPayload &&
+      typeof privyPayload === "object" &&
+      "code" in privyPayload &&
+      typeof (privyPayload as any).code === "string"
+        ? (privyPayload as any).code
+        : null;
+
+    if (privyStatus === 422 && privyCode === "invalid_credentials") {
+      return Response.json(
+        {
+          ok: false,
+          error: "Invalid email and code combination.",
+          privyStatus,
+          privyDetail: privyPayload,
+          diagnostics: {
+            emailUsed: attemptedEmail,
+            commonCauses: [
+              "Email mismatch between send and verify",
+              "A newer OTP was sent, invalidating the previous code",
+              "OTP copied from an older email",
+            ],
+            recovery: "Send OTP once, use the latest email code immediately, do not resend before verify.",
+          },
+        },
+        { status: 422 },
+      );
+    }
+
     return Response.json(
       {
         ok: false,

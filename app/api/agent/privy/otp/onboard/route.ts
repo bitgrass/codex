@@ -27,7 +27,7 @@ const SendStepSchema = z.object({
 const VerifyStepSchema = z.object({
   step: z.literal("verify"),
   email: z.string().email(),
-  code: z.string().min(4).max(10),
+  code: z.string().regex(/^\d{6}$/),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
   autoSetup: z.boolean().optional(),
   createWallet: z.boolean().optional(),
@@ -135,6 +135,8 @@ async function runSetup(params: {
 }
 
 export async function POST(request: Request) {
+  let attemptedStep: "send" | "verify" | "setup" | null = null;
+  let attemptedEmail: string | null = null;
   try {
     const json = await request.json().catch(() => null);
     const parsed = RequestSchema.safeParse(json);
@@ -142,21 +144,27 @@ export async function POST(request: Request) {
       return Response.json(
         {
           ok: false,
-          error: "Invalid body. Expected { step: 'send' | 'verify' | 'setup', ... }.",
+          error:
+            "Invalid body. Expected { step: 'send' | 'verify' | 'setup', ... }. For verify, code must be 6 digits.",
         },
         { status: 400 },
       );
     }
 
+    attemptedStep = parsed.data.step;
     if (parsed.data.step === "send") {
       const email = parsed.data.email.toLowerCase();
+      attemptedEmail = email;
+      const sentAt = new Date().toISOString();
       await sendPrivyEmailOtp(email, parsed.data.captchaToken);
       return Response.json({
         ok: true,
         step: "send",
-        email,
+        emailUsed: email,
+        sentAt,
         nextStep: "verify",
-        next: "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
+        next:
+          "Ask user for the latest 6-digit OTP from this email and call verify once without sending another OTP.",
       });
     }
 
@@ -180,6 +188,7 @@ export async function POST(request: Request) {
     }
 
     const email = parsed.data.email.toLowerCase();
+    attemptedEmail = email;
     const auth = await verifyPrivyEmailOtp({
       email,
       code: parsed.data.code,
@@ -281,6 +290,37 @@ export async function POST(request: Request) {
   } catch (error: any) {
     const privyStatus = error?.privyStatus;
     const privyPayload = error?.privyPayload;
+    const privyCode =
+      privyPayload &&
+      typeof privyPayload === "object" &&
+      "code" in privyPayload &&
+      typeof (privyPayload as any).code === "string"
+        ? (privyPayload as any).code
+        : null;
+
+    if (attemptedStep === "verify" && privyStatus === 422 && privyCode === "invalid_credentials") {
+      return Response.json(
+        {
+          ok: false,
+          step: "verify",
+          error: "Invalid email and code combination.",
+          privyStatus,
+          privyDetail: privyPayload,
+          diagnostics: {
+            emailUsed: attemptedEmail,
+            commonCauses: [
+              "Email mismatch between send and verify",
+              "A newer OTP was sent, invalidating the previous code",
+              "OTP copied from an older email",
+            ],
+            recovery:
+              "Call step='send' once, then verify immediately with the latest 6-digit OTP from that email.",
+          },
+        },
+        { status: 422 },
+      );
+    }
+
     return Response.json(
       {
         ok: false,

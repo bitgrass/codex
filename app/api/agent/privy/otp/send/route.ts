@@ -21,12 +21,15 @@ export async function POST(request: Request) {
     }
 
     const email = parsed.data.email.toLowerCase();
+    const sentAt = new Date().toISOString();
     await sendPrivyEmailOtp(email, parsed.data.captchaToken);
 
     return Response.json({
       ok: true,
-      email,
-      next: "Ask user for OTP code from email, then call /api/agent/privy/otp/verify.",
+      emailUsed: email,
+      sentAt,
+      next:
+        "Ask user for the latest 6-digit OTP from this email and call /api/agent/privy/otp/verify once.",
     });
   } catch (error: any) {
     const privyStatus = error?.privyStatus;

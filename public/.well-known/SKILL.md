@@ -78,8 +78,8 @@ Use `step: "setup"` only if you verified OTP with `autoSetup: false`:
 ```
 
 Response summary:
-- `step: send` -> OTP dispatched and `nextStep: verify`.
-- `step: verify` -> returns `userJwt`, `userId`, `wallet`, `session`, `preferences` when `autoSetup=true`.
+- `step: send` -> OTP dispatched with `emailUsed`, `sentAt`, and `nextStep: verify`.
+- `step: verify` -> returns `userId`, optional `userJwt`, optional `tokenSource`, and when `autoSetup=true` also returns `wallet`, `session`, `preferences`.
 - `step: setup` -> returns final `wallet`, `session`, and `preferences`.
 
 ### `POST /api/agent/privy/otp/send`
@@ -94,7 +94,8 @@ Request:
 
 Response:
 - OTP is sent to user email.
-- Agent should ask user for OTP code, then call `/api/agent/privy/otp/verify`.
+- Returns `emailUsed` and `sentAt`.
+- Agent should ask user for the latest OTP code, then call `/api/agent/privy/otp/verify` once.
 
 ### `POST /api/agent/privy/otp/verify`
 Verifies OTP, creates Privy user if missing, and can auto-create first wallet.
@@ -112,12 +113,16 @@ Request:
   "enableLlm": false
 }
 ```
+Notes:
+- `code` must be exactly 6 digits.
 
 Response:
-- `userJwt` (Privy access JWT for next calls)
 - `userId`
+- optional `userJwt` (only when Privy returned a verifiable access token)
+- optional `tokenSource` (`privy_access_token` | `access_token` | `token`)
 - `wallet` (`id`, `address`) when `createWallet=true`
 - optional `session.authorizationKey` and preferences
+- on invalid OTP pair: `422` with `privyDetail.code = invalid_credentials`
 
 ### `POST /api/agent/privy/agentic/setup`
 First-time setup for agentic wallet access using `userJwt` (typically returned by OTP verify endpoint).
@@ -417,7 +422,8 @@ Step 1 - Ask email
   "email": "user@example.com"
 }
 ```
-3. Tell user: "I sent a 6-digit OTP to your email. Reply with the OTP."
+3. Save `emailUsed` and `sentAt`.
+4. Tell user: "I sent a 6-digit OTP to your email. Reply with the latest OTP from that email."
 
 Step 2 - Collect required preferences before verify
 1. Ask Terms confirmation (must be explicit):
@@ -443,8 +449,10 @@ Step 3 - Verify OTP + create wallet + finalize setup in one call
   "chainType": "ethereum"
 }
 ```
+2. Important: do not call `send` again before `verify` (new OTP invalidates previous codes).
 2. Save:
    - `userJwt`
+   - `tokenSource` (if present)
    - `session.authorizationKey`
    - `wallet.id`
    - `wallet.address`
@@ -504,6 +512,7 @@ Setup options reference:
 - `chainType`: `ethereum` or `solana`.
 - `policyId`: optional policy guardrail id.
 - `autoSetup`: when `true`, `verify` also runs full setup and wallet session auth.
+- `code`: must be a 6-digit OTP string.
 
 Policy + execution after setup:
 1. Optional: create policy via `/api/agent/privy/agentic/policy`.
@@ -514,6 +523,7 @@ Important notes:
 - No pre-existing Privy account is required.
 - First-time users are supported end-to-end.
 - OTP flow is fully headless: user stays in chat with the agent.
+- OTP reliability rule: call `send` once, then `verify` immediately with the latest email code.
 - Transactions are handled by Privy wallet service.
 - Do not attempt wallet setup/transaction before OTP verification.
 
@@ -525,5 +535,7 @@ Important notes:
 
 ## Errors
 - `400`: invalid body or invalid address.
+- `422`: invalid OTP credentials (`invalid_credentials`).
 - `404`: no eligible assets/listings found for requested action.
+- `502`: OTP verified but no verifiable access token returned by upstream auth response.
 - `500`: upstream RPC/indexer/provider failure.
