@@ -21,20 +21,32 @@ export async function POST(request: Request) {
     }
 
     const email = parsed.data.email.toLowerCase();
-    await sendPrivyEmailOtp(email, parsed.data.captchaToken);
+
+    // ▶ FIX: Capture the full init response instead of discarding it.
+    //   If Privy returns a session_token or challenge_id, surface it.
+    const initResult = await sendPrivyEmailOtp(email, parsed.data.captchaToken);
 
     return Response.json({
       ok: true,
       email,
+      // Forward any session/challenge token Privy may have returned
+      ...(initResult.session_token ? { sessionToken: initResult.session_token } : {}),
+      ...(initResult.challenge_id ? { challengeId: initResult.challenge_id } : {}),
       next: "Ask user for OTP code from email, then call /api/agent/privy/otp/verify.",
     });
   } catch (error: any) {
+    // ▶ FIX: Surface Privy-specific error details for agent debugging
+    const privyStatus = error?.privyStatus;
+    const privyPayload = error?.privyPayload;
+
     return Response.json(
       {
         ok: false,
         error: error?.message || "Failed to send email OTP.",
+        ...(privyStatus ? { privyStatus } : {}),
+        ...(privyPayload ? { privyDetail: privyPayload } : {}),
       },
-      { status: 500 },
+      { status: privyStatus && privyStatus >= 400 ? privyStatus : 500 },
     );
   }
 }
