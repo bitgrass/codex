@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     const body = {
       id: 1,
       jsonrpc: "2.0",
-      method: "cdp_getSwapQuote",
+      method: "cdp_getSwapTrade",
       params: [
         {
           from: toAsset(parsed.data.fromSymbol),
@@ -106,7 +106,8 @@ export async function POST(request: Request) {
 
     const result = data.result ?? data;
 
-    if (!result?.transaction?.to || !result?.transaction?.data) {
+    // CDP returns result.tx (swap) and result.approveTx (ERC-20 approval, optional)
+    if (!result?.tx?.to || !result?.tx?.data) {
       return Response.json(
         {
           ok: false,
@@ -126,26 +127,26 @@ export async function POST(request: Request) {
       amountRaw,
       walletAddress: parsed.data.walletAddress,
       quote: {
-        toAmount: result.toAmount ?? null,
-        minToAmount: result.minToAmount ?? null,
-        fromAmountUSD: result.fromAmountUSD ?? null,
-        toAmountUSD: result.toAmountUSD ?? null,
+        toAmount: result.quote?.toAmount ?? result.toAmount ?? null,
+        minToAmount: result.quote?.minToAmount ?? result.minToAmount ?? null,
+        fromAmountUSD: result.quote?.fromAmountUSD ?? null,
+        toAmountUSD: result.quote?.toAmountUSD ?? null,
       },
       transaction: {
-        to: result.transaction.to as `0x${string}`,
-        data: result.transaction.data as `0x${string}`,
-        value: result.transaction.value ?? "0x0",
-        gas: result.transaction.gas ?? null,
-        maxFeePerGas: result.transaction.maxFeePerGas ?? null,
-        maxPriorityFeePerGas: result.transaction.maxPriorityFeePerGas ?? null,
+        to: result.tx.to as `0x${string}`,
+        data: result.tx.data as `0x${string}`,
+        value: result.tx.value ?? "0x0",
+        gas: result.tx.gas ?? null,
+        maxFeePerGas: result.tx.maxFeePerGas ?? null,
+        maxPriorityFeePerGas: result.tx.maxPriorityFeePerGas ?? null,
       },
       // approveTransaction is only present when selling ERC-20 (e.g. USDC → ETH)
-      approveTransaction: result.approveTransaction?.data
+      approveTransaction: result.approveTx?.data
         ? {
-            to: result.approveTransaction.to as `0x${string}`,
-            data: result.approveTransaction.data as `0x${string}`,
-            value: result.approveTransaction.value ?? "0x0",
-            gas: result.approveTransaction.gas ?? null,
+            to: result.approveTx.to as `0x${string}`,
+            data: result.approveTx.data as `0x${string}`,
+            value: result.approveTx.value ?? "0x0",
+            gas: result.approveTx.gas ?? null,
           }
         : null,
     });
