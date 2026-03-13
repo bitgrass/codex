@@ -32,12 +32,12 @@ export function getPrivyAuthConfig() {
   }
 
   const authBaseUrl = process.env.PRIVY_AUTH_BASE_URL || "https://auth.privy.io";
-  const appClientId = process.env.PRIVY_APP_ID || undefined;
+  const clientHeader = process.env.PRIVY_CLIENT_HEADER || undefined;
   const appOrigin = normalizeUrlOrigin(
     process.env.PRIVY_AUTH_ORIGIN || process.env.NEXT_PUBLIC_URL || undefined,
   );
 
-  return { appId, appClientId, authBaseUrl, appOrigin };
+  return { appId, clientHeader, authBaseUrl, appOrigin };
 }
 
 export function getPrivyClient() {
@@ -53,16 +53,15 @@ type PasswordlessMode = "no-signup" | "login-or-sign-up";
 
 // ─── Enhanced auth route with full response logging ───────────────────────────
 async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, unknown>) {
-  const { appId, appClientId, authBaseUrl, appOrigin } = getPrivyAuthConfig();
+  const { appId, clientHeader, authBaseUrl, appOrigin } = getPrivyAuthConfig();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
     "privy-app-id": appId,
-    "privy-client": "bitgrass-agent-api/1.0",
   };
 
-  if (appClientId) {
-    headers["privy-client-id"] = appClientId;
+  if (clientHeader) {
+    headers["privy-client"] = clientHeader;
   }
   if (appOrigin) {
     headers.Origin = appOrigin;
@@ -75,7 +74,7 @@ async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, 
     url,
     bodyKeys: Object.keys(body),
     hasOrigin: Boolean(appOrigin),
-    hasClientId: Boolean(appClientId),
+    hasClientHeader: Boolean(clientHeader),
   });
 
   const response = await fetch(url, {
@@ -121,24 +120,11 @@ async function postPrivyAuthRoute<TResponse>(path: string, body: Record<string, 
 }
 
 // ─── OTP init: capture + return the full response ─────────────────────────────
-export type PrivyOtpInitResponse = {
-  session_token?: string;
-  challenge_id?: string;
-  [key: string]: unknown;
-};
-
-export async function sendPrivyEmailOtp(
-  email: string,
-  token?: string,
-): Promise<PrivyOtpInitResponse> {
-  const result = await postPrivyAuthRoute<PrivyOtpInitResponse>(
-    "/api/v1/passwordless/init",
-    {
-      email: email.toLowerCase(),
-      ...(token ? { token } : {}),
-    },
-  );
-  return result;
+export async function sendPrivyEmailOtp(email: string, token?: string) {
+  await postPrivyAuthRoute("/api/v1/passwordless/init", {
+    email: email.toLowerCase(),
+    ...(token ? { token } : {}),
+  });
 }
 
 export type PrivyPasswordlessAuthenticateResponse = {
@@ -402,4 +388,21 @@ export async function getUserPrimaryEmail(userId: string) {
   );
 
   return emailAccount?.address ? String(emailAccount.address).toLowerCase() : null;
+}
+
+export function buildApiError(error: any, fallbackMessage: string) {
+  const status =
+    typeof error?.privyStatus === "number" && error.privyStatus >= 400
+      ? error.privyStatus
+      : 500;
+
+  return {
+    status,
+    body: {
+      ok: false,
+      error: error?.message || fallbackMessage,
+      ...(error?.privyStatus ? { privyStatus: error.privyStatus } : {}),
+      ...(error?.privyPayload ? { privyDetail: error.privyPayload } : {}),
+    },
+  };
 }

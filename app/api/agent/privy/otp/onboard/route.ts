@@ -6,9 +6,9 @@ import {
   findFirstWalletForUser,
   getPrivyClient,
   getUserPrimaryEmail,
+  sendPrivyEmailOtp,
   type AgentAccessMode,
   type PrivyPasswordlessAuthenticateResponse,
-  type WalletSessionResult,
   updateWalletPolicy,
   upsertAgentPreferences,
   verifyPrivyEmailOtp,
@@ -18,10 +18,18 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const RequestSchema = z.object({
+const SendStepSchema = z.object({
+  step: z.literal("send"),
+  email: z.string().email(),
+  captchaToken: z.string().min(1).optional(),
+});
+
+const VerifyStepSchema = z.object({
+  step: z.literal("verify"),
   email: z.string().email(),
   code: z.string().min(4).max(10),
   mode: z.enum(["no-signup", "login-or-sign-up"]).optional(),
+  autoSetup: z.boolean().optional(),
   createWallet: z.boolean().optional(),
   chainType: z.enum(["ethereum", "solana"]).optional(),
   policyId: z.string().min(1).optional(),
@@ -31,16 +39,109 @@ const RequestSchema = z.object({
   enableLlm: z.boolean().optional(),
 });
 
-function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
-  const isLikelyJwt = (value: string) => value.split(".").length === 3;
+const SetupStepSchema = z.object({
+  step: z.literal("setup"),
+  userJwt: z.string().min(1),
+  createWallet: z.boolean().optional(),
+  chainType: z.enum(["ethereum", "solana"]).optional(),
+  policyId: z.string().min(1).optional(),
+  acceptTerms: z.boolean(),
+  access: z.enum(["read_only", "read_write"]).optional(),
+  keyName: z.string().min(1).max(64).optional(),
+  enableLlm: z.boolean().optional(),
+});
 
+const RequestSchema = z.union([SendStepSchema, VerifyStepSchema, SetupStepSchema]);
+
+function pickUserJwt(payload: PrivyPasswordlessAuthenticateResponse) {
   if (payload.privy_access_token && payload.privy_access_token.length > 0) {
     return payload.privy_access_token;
   }
-  if (payload.token && payload.token.length > 0 && isLikelyJwt(payload.token)) {
+  if (payload.token && payload.token.length > 0) {
     return payload.token;
   }
   return null;
+}
+
+async function runSetup(params: {
+  userJwt: string;
+  createWallet?: boolean;
+  chainType?: "ethereum" | "solana";
+  policyId?: string;
+  acceptTerms: boolean;
+  access?: AgentAccessMode;
+  keyName?: string;
+  enableLlm?: boolean;
+}) {
+  if (!params.acceptTerms) {
+    throw new Error("acceptTerms must be true to complete setup.");
+  }
+
+  const verified = await verifyPrivyUserJwt(params.userJwt);
+  const userId = verified.user_id;
+  const chainType = params.chainType ?? "ethereum";
+  const createWallet = params.createWallet ?? true;
+  const access: AgentAccessMode = params.access ?? "read_only";
+
+  const email = await getUserPrimaryEmail(userId);
+  if (!email) {
+    throw new Error("Email OTP login is required. This user has no email account linked in Privy.");
+  }
+
+  let wallet = null as Awaited<ReturnType<typeof findFirstWalletForUser>>;
+  let walletCreated = false;
+
+  if (createWallet) {
+    wallet = await findFirstWalletForUser({
+      userId,
+      chainType,
+    });
+
+    if (!wallet) {
+      wallet = await createWalletForUser({
+        chainType,
+        userId,
+        policyIds: params.policyId ? [params.policyId] : undefined,
+      });
+      walletCreated = true;
+    } else if (params.policyId && !wallet.policy_ids?.includes(params.policyId)) {
+      wallet = await updateWalletPolicy({
+        walletId: wallet.id,
+        policyIds: [params.policyId],
+        userJwt: params.userJwt,
+      });
+    }
+  }
+
+  const session = await authenticateWalletSession(getPrivyClient(), params.userJwt);
+
+  const preferences = await upsertAgentPreferences({
+    userId,
+    access,
+    keyName: params.keyName,
+    enableLlm: params.enableLlm,
+    acceptTerms: true,
+  });
+
+  return {
+    userId,
+    email,
+    wallet: wallet
+      ? {
+          id: wallet.id,
+          address: wallet.address,
+          chainType: wallet.chain_type,
+          policyIds: wallet.policy_ids,
+          created: walletCreated,
+        }
+      : null,
+    session: {
+      expiresAt: session.expiresAt,
+      authorizationKey: session.authorizationKey,
+      encryptedAuthorizationKey: session.encryptedAuthorizationKey,
+    },
+    preferences,
+  };
 }
 
 export async function POST(request: Request) {
@@ -51,68 +152,49 @@ export async function POST(request: Request) {
       return Response.json(
         {
           ok: false,
-          error:
-            "Invalid body. Expected { email, code, mode?, createWallet?, chainType?, policyId?, acceptTerms?, access?, keyName?, enableLlm? }.",
+          error: "Invalid body. Expected { step: 'send' | 'verify' | 'setup', ... }.",
         },
         { status: 400 },
       );
+    }
+
+    if (parsed.data.step === "send") {
+      const email = parsed.data.email.toLowerCase();
+      await sendPrivyEmailOtp(email, parsed.data.captchaToken);
+      return Response.json({
+        ok: true,
+        step: "send",
+        email,
+        nextStep: "verify",
+        next: "Ask user for OTP, then call this endpoint with { step: 'verify', email, code, ... }.",
+      });
+    }
+
+    if (parsed.data.step === "setup") {
+      const setup = await runSetup({
+        userJwt: parsed.data.userJwt,
+        createWallet: parsed.data.createWallet,
+        chainType: parsed.data.chainType,
+        policyId: parsed.data.policyId,
+        acceptTerms: parsed.data.acceptTerms,
+        access: parsed.data.access,
+        keyName: parsed.data.keyName,
+        enableLlm: parsed.data.enableLlm,
+      });
+
+      return Response.json({
+        ok: true,
+        step: "setup",
+        ...setup,
+      });
     }
 
     const email = parsed.data.email.toLowerCase();
-    const chainType = parsed.data.chainType ?? "ethereum";
-    const shouldCreateWallet = parsed.data.createWallet ?? true;
-    const setupRequested =
-      parsed.data.acceptTerms !== undefined ||
-      parsed.data.access !== undefined ||
-      parsed.data.keyName !== undefined ||
-      parsed.data.enableLlm !== undefined;
-
-    if (setupRequested && parsed.data.acceptTerms !== true) {
-      return Response.json(
-        {
-          ok: false,
-          error:
-            "acceptTerms must be true when setting agent preferences during OTP verification.",
-        },
-        { status: 400 },
-      );
-    }
-
-    // ▶ Wrap Privy verify with structured error handling
-    let auth: PrivyPasswordlessAuthenticateResponse;
-    try {
-      auth = await verifyPrivyEmailOtp({
-        email,
-        code: parsed.data.code,
-        mode: parsed.data.mode,
-      });
-    } catch (verifyError: any) {
-      const privyStatus = verifyError?.privyStatus;
-      const privyPayload = verifyError?.privyPayload;
-
-      console.error("[otp/verify] Privy authenticate failed:", {
-        email,
-        privyStatus,
-        message: verifyError?.message,
-      });
-
-      return Response.json(
-        {
-          ok: false,
-          error: verifyError?.message || "OTP verification failed.",
-          step: "verify",
-          ...(privyStatus ? { privyStatus } : {}),
-          ...(privyPayload ? { privyDetail: privyPayload } : {}),
-          hint:
-            privyStatus === 401 || privyStatus === 403
-              ? "OTP may be expired or incorrect. Ask the user to request a new OTP via the send endpoint."
-              : privyStatus === 429
-                ? "Rate limited by Privy. Wait a few minutes before retrying."
-                : "Check server logs for [privy-auth] error details.",
-        },
-        { status: privyStatus && privyStatus >= 400 ? privyStatus : 500 },
-      );
-    }
+    const auth = await verifyPrivyEmailOtp({
+      email,
+      code: parsed.data.code,
+      mode: parsed.data.mode,
+    });
 
     const userJwt = pickUserJwt(auth);
     let userId = auth.user?.id ? String(auth.user.id) : null;
@@ -121,104 +203,85 @@ export async function POST(request: Request) {
       userId = verified?.user_id ? String(verified.user_id) : null;
     }
 
-    if (!userId) {
+    if (!userJwt || !userId) {
       return Response.json(
         {
           ok: false,
-          error: "OTP verified but could not resolve user ID.",
+          error: "OTP verified but could not resolve userJwt/userId.",
         },
         { status: 500 },
       );
     }
 
-    const privy = getPrivyClient();
-    let wallet = null as Awaited<ReturnType<typeof findFirstWalletForUser>>;
-    let walletCreated = false;
+    const autoSetup = parsed.data.autoSetup ?? true;
+    const linkedEmail =
+      extractEmailFromPrivyUser(auth.user) || (await getUserPrimaryEmail(userId)) || email;
 
-    if (shouldCreateWallet) {
-      wallet = await findFirstWalletForUser({ userId, chainType });
-
-      if (!wallet) {
-        wallet = await createWalletForUser({
-          chainType,
-          userId,
-          policyIds: parsed.data.policyId ? [parsed.data.policyId] : undefined,
-        });
-        walletCreated = true;
-      } else if (parsed.data.policyId && !wallet.policy_ids?.includes(parsed.data.policyId)) {
-        wallet = await updateWalletPolicy({
-          walletId: wallet.id,
-          policyIds: [parsed.data.policyId],
-          userJwt: userJwt ?? undefined,
-        });
-      }
-    }
-
-    let session: WalletSessionResult | null = null;
-    let sessionError: string | null = null;
-    if (userJwt) {
-      try {
-        session = await authenticateWalletSession(privy, userJwt);
-      } catch (error: any) {
-        session = null;
-        sessionError = error?.message || "Failed to authenticate wallet session.";
-        console.error("[otp/verify] Wallet session auth failed:", sessionError);
-      }
-    }
-
-    let preferences = null as any;
-    if (setupRequested) {
-      const access: AgentAccessMode = parsed.data.access ?? "read_only";
-      preferences = await upsertAgentPreferences({
+    if (!autoSetup) {
+      return Response.json({
+        ok: true,
+        step: "verify",
+        isNewUser: Boolean(auth.is_new_user),
+        email: linkedEmail,
         userId,
-        access,
-        keyName: parsed.data.keyName,
-        enableLlm: parsed.data.enableLlm,
-        acceptTerms: true,
+        userJwt,
+        refreshToken: auth.refresh_token ?? null,
+        identityToken: auth.identity_token ?? null,
+        nextStep: "setup",
+        next: "Call this endpoint with { step: 'setup', userJwt, acceptTerms, ... }.",
       });
     }
 
-    const linkedEmail = extractEmailFromPrivyUser(auth.user) || (await getUserPrimaryEmail(userId));
+    if (parsed.data.acceptTerms !== true) {
+      return Response.json(
+        {
+          ok: false,
+          step: "verify",
+          error: "acceptTerms must be true when autoSetup=true.",
+          needs: {
+            acceptTerms: true,
+            suggestedStep: "setup",
+          },
+          userId,
+          userJwt,
+        },
+        { status: 400 },
+      );
+    }
+
+    const setup = await runSetup({
+      userJwt,
+      createWallet: parsed.data.createWallet,
+      chainType: parsed.data.chainType,
+      policyId: parsed.data.policyId,
+      acceptTerms: true,
+      access: parsed.data.access,
+      keyName: parsed.data.keyName,
+      enableLlm: parsed.data.enableLlm,
+    });
 
     return Response.json({
       ok: true,
-      email: linkedEmail || email,
+      step: "verify",
       isNewUser: Boolean(auth.is_new_user),
-      userId,
       userJwt,
       refreshToken: auth.refresh_token ?? null,
       identityToken: auth.identity_token ?? null,
-      wallet: wallet
-        ? {
-            id: wallet.id,
-            address: wallet.address,
-            chainType: wallet.chain_type,
-            policyIds: wallet.policy_ids,
-            created: walletCreated,
-          }
-        : null,
-      session: session
-        ? {
-            expiresAt: session.expiresAt,
-            authorizationKey: session.authorizationKey,
-            encryptedAuthorizationKey: session.encryptedAuthorizationKey,
-          }
-        : null,
-      sessionError,
-      preferences,
-      next: userJwt
-        ? session
-          ? "Use returned userJwt + wallet.id with /api/agent/privy/agentic/send-transaction."
-          : "Wallet created, but session key generation failed. Retry setup with a valid userJwt."
-        : "OTP verified. No userJwt returned; call setup endpoint with a valid userJwt.",
+      ...setup,
+      nextStep: "ready",
+      next: "Use userJwt + wallet.id with /api/agent/privy/agentic/send-transaction.",
     });
   } catch (error: any) {
+    const privyStatus = error?.privyStatus;
+    const privyPayload = error?.privyPayload;
     return Response.json(
       {
         ok: false,
-        error: error?.message || "Failed to verify email OTP.",
+        error: error?.message || "Failed to process OTP onboarding.",
+        ...(privyStatus ? { privyStatus } : {}),
+        ...(privyPayload ? { privyDetail: privyPayload } : {}),
       },
-      { status: 500 },
+      { status: privyStatus && privyStatus >= 400 ? privyStatus : 500 },
     );
   }
 }

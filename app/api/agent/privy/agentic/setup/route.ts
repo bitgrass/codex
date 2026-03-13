@@ -1,9 +1,12 @@
 import { z } from "zod";
 import {
+  authenticateWalletSession,
+  createWalletForUser,
   findFirstWalletForUser,
-  getUserPrimaryEmail,
   getPrivyClient,
+  getUserPrimaryEmail,
   type AgentAccessMode,
+  updateWalletPolicy,
   upsertAgentPreferences,
   verifyPrivyUserJwt,
 } from "../../_lib";
@@ -57,14 +60,11 @@ export async function POST(request: Request) {
       return Response.json(
         {
           ok: false,
-          error:
-            "Email OTP login is required. This user has no email account linked in Privy.",
+          error: "Email OTP login is required. This user has no email account linked in Privy.",
         },
         { status: 403 },
       );
     }
-
-    const privy = getPrivyClient();
 
     let wallet =
       (await findFirstWalletForUser({
@@ -73,23 +73,20 @@ export async function POST(request: Request) {
       })) || null;
 
     if (!wallet) {
-      wallet = await privy.wallets().create({
-        chain_type: chainType,
-        owner: { user_id: userId },
-        policy_ids: parsed.data.policyId ? [parsed.data.policyId] : undefined,
+      wallet = await createWalletForUser({
+        chainType,
+        userId,
+        policyIds: parsed.data.policyId ? [parsed.data.policyId] : undefined,
       });
     } else if (parsed.data.policyId && !wallet.policy_ids?.includes(parsed.data.policyId)) {
-      wallet = await privy.wallets().update(wallet.id, {
-        policy_ids: [parsed.data.policyId],
-        authorization_context: {
-          user_jwts: [userJwt],
-        },
+      wallet = await updateWalletPolicy({
+        walletId: wallet.id,
+        policyIds: [parsed.data.policyId],
+        userJwt,
       });
     }
 
-    const session = await privy.wallets().authenticateWithJwt({
-      user_jwt: userJwt,
-    });
+    const session = await authenticateWalletSession(getPrivyClient(), userJwt);
 
     const preferences = await upsertAgentPreferences({
       userId,
@@ -111,13 +108,9 @@ export async function POST(request: Request) {
         policyIds: wallet.policy_ids,
       },
       session: {
-        expiresAt: session.expires_at,
-        authorizationKey:
-          "authorization_key" in session ? session.authorization_key : undefined,
-        encryptedAuthorizationKey:
-          "encrypted_authorization_key" in session
-            ? session.encrypted_authorization_key
-            : undefined,
+        expiresAt: session.expiresAt,
+        authorizationKey: session.authorizationKey,
+        encryptedAuthorizationKey: session.encryptedAuthorizationKey,
       },
       preferences,
       capabilities: {
@@ -127,12 +120,16 @@ export async function POST(request: Request) {
       },
     });
   } catch (error: any) {
+    const privyStatus = error?.privyStatus;
+    const privyPayload = error?.privyPayload;
     return Response.json(
       {
         ok: false,
         error: error?.message || "Failed to complete Privy agentic setup.",
+        ...(privyStatus ? { privyStatus } : {}),
+        ...(privyPayload ? { privyDetail: privyPayload } : {}),
       },
-      { status: 500 },
+      { status: privyStatus && privyStatus >= 400 ? privyStatus : 500 },
     );
   }
 }
