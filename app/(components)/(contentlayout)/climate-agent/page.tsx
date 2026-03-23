@@ -18,6 +18,7 @@ import {
   EthInfo,
 } from "@/shared/data/tokens/data";
 import { IconBoxPadding } from "@/public/assets/iconfonts/tabler-icons/icons-react";
+import { BASE_RPC_URL } from "@/app/base-rpc";
 
 type ChatStatus = "pending" | "success" | "error";
 
@@ -924,7 +925,7 @@ async function buildStandardMintTx(address: `0x${string}`) {
   const SEADROP_CONDUIT = SEADROP_CONDUIT_INFO;
   const SeaDropABI = SeaDropABIData as any;
 
-  const provider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+  const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
   const readSeaDrop = new ethers.Contract(SEADROP_ADDRESS, SeaDropABI, provider);
   const publicDrop = await readSeaDrop.getPublicDrop(CONTRACT_ADDRESS);
   const mintPrice: bigint = BigInt(publicDrop.mintPrice);
@@ -984,7 +985,7 @@ async function buildPremiumLegendaryTx(params: {
     throw new Error("Invalid fulfillment data from OpenSea.");
   }
 
-  const provider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+  const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
   const seaport = new Seaport(provider, {
     overrides: { contractAddress: order.protocol_address },
   });

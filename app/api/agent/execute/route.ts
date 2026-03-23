@@ -15,6 +15,7 @@ import { POST as swapTransactionPost } from "../swap/transaction/route";
 import { POST as walletBalancePost } from "../wallet/balance/route";
 import { POST as walletNftsPost } from "../wallet/nfts/route";
 import { POST as privySendTransactionPost } from "../privy/agentic/send-transaction/route";
+import { getBaseRpcUrl } from "@/app/base-rpc";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,11 +41,7 @@ function getExecutor() {
     throw new Error("Missing AGENT_EXECUTOR_PRIVATE_KEY (or WALLET_PRIVATE_KEY).");
   }
 
-  const rpcUrl =
-    process.env.BASE_MAINNET_RPC_URL ||
-    process.env.BASE_RPC_URL ||
-    "https://mainnet.base.org";
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const provider = new ethers.JsonRpcProvider(getBaseRpcUrl());
   const wallet = new ethers.Wallet(privateKey, provider);
 
   return { provider, wallet };

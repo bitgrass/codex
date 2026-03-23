@@ -17,6 +17,7 @@ import { nftInfo, SeaDropABIData, CONTRACT_ADDRESS_INFO, SEADROP_ADDRESS_INFO, S
 import { usePrivy, useLogin } from '@privy-io/react-auth';
 import { useConnectedAddress } from "../../useConnectedAddress"; // Update this import path
 import { sdk } from "@farcaster/miniapp-sdk";
+import { BASE_RPC_URL, BASE_WALLET_CHAIN_PARAMS } from "@/app/base-rpc";
 
 type OrderData = {
     parameters: any;
@@ -264,7 +265,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
             }
 
             // Read mint price from SeaDrop
-            const publicProvider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+            const publicProvider = new ethers.JsonRpcProvider(BASE_RPC_URL);
             const readSeaDrop = new ethers.Contract(SEADROP_ADDRESS, SeaDropABI, publicProvider);
             const publicDrop = await readSeaDrop.getPublicDrop(CONTRACT_ADDRESS);
             const mintPrice = publicDrop.mintPrice;
@@ -784,17 +785,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                             try {
                                 await window.ethereum.request({
                                     method: 'wallet_addEthereumChain',
-                                    params: [{
-                                        chainId: baseChainId,
-                                        chainName: 'Base',
-                                        nativeCurrency: {
-                                            name: 'Ethereum',
-                                            symbol: 'ETH',
-                                            decimals: 18
-                                        },
-                                        rpcUrls: ['https://mainnet.base.org'],
-                                        blockExplorerUrls: ['https://basescan.org']
-                                    }],
+                                    params: [BASE_WALLET_CHAIN_PARAMS],
                                 });
                                 console.log('✅ Added and switched to Base network');
                             } catch (addError) {
@@ -807,7 +798,7 @@ const Nftdetails = ({ initialTabId }: NftdetailsProps) => {
                 }
             }
 
-            const provider = new ethers.JsonRpcProvider("https://mainnet.base.org");
+            const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
             const buyerAddress = userAddress;
 
             // Verify we're on Base network

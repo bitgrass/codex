@@ -9,6 +9,7 @@ import { encodeFunctionData } from "viem"
 import { useSwitchChain } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { usePrivy } from '@privy-io/react-auth'
+import { BASE_RPC_URL, BASE_WALLET_CHAIN_PARAMS } from "@/app/base-rpc"
 
 const client = createThirdwebClient({
     clientId: process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID || "",
@@ -17,7 +18,7 @@ const client = createThirdwebClient({
 // Base chain with PublicNode RPC
 const baseChain = defineChain({
     id: 8453,
-    rpc: "https://base-rpc.publicnode.com",
+    rpc: BASE_RPC_URL,
 })
 
 // Contract addresses for different pools
@@ -597,17 +598,7 @@ const StakingNFT = () => {
                             try {
                                 await window.ethereum.request({
                                     method: 'wallet_addEthereumChain',
-                                    params: [{
-                                        chainId: '0x2105',
-                                        chainName: 'Base',
-                                        nativeCurrency: {
-                                            name: 'Ethereum',
-                                            symbol: 'ETH',
-                                            decimals: 18
-                                        },
-                                        rpcUrls: ['https://mainnet.base.org'],
-                                        blockExplorerUrls: ['https://basescan.org']
-                                    }],
+                                    params: [BASE_WALLET_CHAIN_PARAMS],
                                 })
                                 console.log('✅ Added and switched to Base network')
                                 return true

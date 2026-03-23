@@ -10,6 +10,7 @@ import CarbonAssetsCard from "./CarbonAssetsCard";
 import { useConnectedAddress } from "../useConnectedAddress";
 import { flushSync } from "react-dom";
 import { createThirdwebClient, getContract, defineChain, readContract } from "thirdweb";
+import { BASE_RPC_URL } from "@/app/base-rpc";
 
 // Staking contract addresses
 const LEGENDARY_POOL_ADDRESS = "0xAbdD77516765235e3121773bcB4E33984c604D7C";
@@ -22,7 +23,7 @@ const client = createThirdwebClient({
 
 const baseChain = defineChain({
     id: 8453,
-    rpc: "https://base-rpc.publicnode.com",
+    rpc: BASE_RPC_URL,
 });
 // ✅ CRITICAL FIX: More comprehensive deduplication
 function dedupeTransactions<T extends {

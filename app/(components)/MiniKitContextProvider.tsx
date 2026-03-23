@@ -11,6 +11,7 @@ import { useWagmiConfig } from './wagmi';
 import { useEffect, useState } from 'react';
 import { addRpcUrlOverrideToChain } from '@privy-io/chains';
 import { ThirdwebProvider } from 'thirdweb/react';
+import { BASE_RPC_URL, baseChainWithRpc } from '@/app/base-rpc';
 
 type Props = { children: ReactNode };
 
@@ -32,7 +33,7 @@ function WagmiWrapper({ children }: { children: ReactNode }) {
         <WagmiProvider config={wagmiConfig} reconnectOnMount={false}>
           <MiniKitProvider
             apiKey={NEXT_PUBLIC_CDP_API_KEY}
-            chain={base as any}
+            chain={baseChainWithRpc as any}
             projectId="55dd698a-0763-4455-9c13-3db125f81623"
             config={{
               appearance: { theme: 'base', mode: 'light' },
@@ -51,11 +52,8 @@ function WagmiWrapper({ children }: { children: ReactNode }) {
   );
 }
 
-const privyBaseRpcUrl =
-  process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org';
-
 // Configure Base chain for Privy embedded wallets with an overridable RPC.
-const baseWithRpc = addRpcUrlOverrideToChain(base, privyBaseRpcUrl);
+const baseWithRpc = addRpcUrlOverrideToChain(base, BASE_RPC_URL);
 
 function OnchainProviders({ children }: Props) {
   const [mounted, setMounted] = useState(false);

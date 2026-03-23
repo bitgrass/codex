@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { getBaseRpcUrl as getSharedBaseRpcUrl } from "@/app/base-rpc";
 
 export const BASE_CHAIN_ID = 8453;
 export const NFT_COLLECTION_ADDRESS = "0x95273ead1dc63b4d809018f10c3e659c5fb0b8a5" as const;
@@ -60,7 +61,7 @@ const pools: PoolInfo[] = [
 ];
 
 function getRpcUrl() {
-  return process.env.BASE_MAINNET_RPC_URL || process.env.BASE_RPC_URL || "https://mainnet.base.org";
+  return getSharedBaseRpcUrl();
 }
 
 async function rpcRequest<T>(method: string, params: unknown[]): Promise<T> {

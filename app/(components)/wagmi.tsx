@@ -7,6 +7,7 @@ import { coinbaseWallet } from 'wagmi/connectors';
 
 import { createConfig as createPrivyConfig } from '@privy-io/wagmi';
 import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector';
+import { BASE_RPC_URL } from '@/app/base-rpc';
 
 export function useWagmiConfig() {
   return useMemo(() => {
@@ -25,7 +26,7 @@ export function useWagmiConfig() {
       multiInjectedProviderDiscovery: true,
       ssr: true,
       transports: { 
-        [base.id]: http('https://base.llamarpc.com', {
+        [base.id]: http(BASE_RPC_URL, {
           batch: true,
           retryCount: 3,
         })
