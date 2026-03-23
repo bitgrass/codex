@@ -2,7 +2,7 @@ name: Deploy (OpenNext -> Cloudflare)
 
 on:
   push:
-    branches: ["skill-agent"]
+    branches: ["rpc"]
   workflow_dispatch:
 
 jobs:
