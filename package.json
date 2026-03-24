@@ -24,11 +24,11 @@
     "sass-min": "sass .remi/public/assets/scss/:./public/assets/css/ --style compressed"
   },
   "dependencies": {
-    "@coinbase/onchainkit": "^0.38.14",
+    "@ai-sdk/anthropic": "^3.0.63",
+    "@ai-sdk/openai": "latest",
     "@coinbase/agentkit": "latest",
     "@coinbase/agentkit-vercel-ai-sdk": "latest",
-    "@ai-sdk/openai": "latest",
-    "ai": "latest",
+    "@coinbase/onchainkit": "^0.38.14",
     "@coinbase/payments-mcp": "^1.0.5",
     "@emotion/styled": "^11.11.5",
     "@farcaster/miniapp-sdk": "^0.1.6",
@@ -59,6 +59,7 @@
     "@types/leaflet": "^1.9.11",
     "@types/react-datepicker": "^6.2.0",
     "@types/react-simple-maps": "^3.0.4",
+    "ai": "latest",
     "apexcharts": "^3.48.0",
     "autoprefixer": "^10.4.19",
     "axios": "^1.7.9",

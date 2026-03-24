@@ -1,5 +1,4 @@
-﻿import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
+﻿import OpenAI from "openai";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -735,15 +734,10 @@ export async function POST(request: Request) {
   const walletConnected = parsed.data.walletConnected ?? false;
   const address = parsed.data.address ?? "unknown";
 
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    return Response.json({
-      reply:
-        "OpenAI API key is not configured on the server. " +
-        "Please set OPENAI_API_KEY and restart the dev server.",
-      intent: { type: "unknown" as const },
-    });
-  }
+  const openclaw = new OpenAI({
+    baseURL: process.env.OPENCLAW_GATEWAY_URL ?? "http://127.0.0.1:18789/v1",
+    apiKey: process.env.OPENCLAW_TOKEN ?? "no-key",
+  });
 
   try {
     const guideText = await loadBitgrassGuide();
@@ -904,45 +898,41 @@ export async function POST(request: Request) {
       // Allow a normal assistant response style; avoid exposing retrieval internals to end users.
     }
 
-    const historyText = history
-      .map((entry) => `${entry.role === "user" ? "User" : "Assistant"}: ${entry.content}`)
-      .join("\n");
-    const result = await generateText({
-      model: openai("gpt-5.2"),
-      system:
-        "You are a helpful onchain assistant. " +
-        "Be concise, friendly, and accurate. " +
-        "You can answer general crypto questions too. " +
-        "When answering general questions, keep it short (3-5 lines) and use '-' bullets with line breaks. " +
-        "Each bullet must be on its own line, no inline bullets. " +
-        "Use HTML <strong> for bold emphasis (not markdown **). " +
-        "Start with the direct answer; do not add meta lines like 'To start' unless the user asked for next steps. " +
-        "For transaction-related replies, keep it concise and do not use bullets. " +
-        "You CAN initiate swaps (ETH <-> USDC) and transfers (ETH/USDC) on Base via the user's connected wallet, " +
-        "but the user must approve the transaction in their wallet. " +
-        "You CAN check balances and NFTs when a wallet is connected. " +
-        "You CAN claim BCO2 rewards for staked land plots when asked. " +
-        "You CAN stake and unstake land plots (Legendary/Premium/Standard) when asked. " +
-        "You CAN help buy tokenized plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base. " +
-        "If the user asks about Bitgrass modules/features/how-to usage, use the provided Bitgrass guide context as primary source. " +
-        "Do not invent module details that are not in the guide context. " +
-        "If context is present, prefer it over prior assumptions. " +
-        `Wallet connected: ${walletConnected ? "yes" : "no"}. ` +
-        `Connected address: ${address}. ` +
-        "Never claim you executed a transaction.",
-      prompt:
-        (historyText ? `${historyText}\n` : "") +
-        (guideContext ? `Bitgrass guide context:\n${guideContext}\n\n` : "") +
-        `User: ${message}`,
+    const systemPrompt =
+      "You are an onchain assistant for the Bitgrass platform. " +
+      "Respond in your own natural style — be yourself. " +
+      "Here is what you can do for the user: " +
+      "check wallet balances and NFTs on Base, " +
+      "initiate swaps (ETH <-> USDC) and transfers (ETH/USDC) — user approves in their wallet, " +
+      "stake and unstake land plots (Standard/Premium/Legendary), " +
+      "claim BCO2 rewards, " +
+      "help buy tokenized plots (Standard 100m², Premium 500m², Legendary 1000m²), " +
+      "check leaderboard rank and BTG claimable rewards. " +
+      "For Bitgrass-specific questions, use the guide context provided — do not invent details not in it. " +
+      "Never claim you executed a transaction. " +
+      `Wallet connected: ${walletConnected ? "yes" : "no"}. ` +
+      `Connected address: ${address}.`;
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompt },
+      ...history.map((entry) => ({
+        role: entry.role as "user" | "assistant",
+        content: entry.content,
+      })),
+      ...(guideContext
+        ? [{ role: "user" as const, content: `Bitgrass guide context:\n${guideContext}` },
+           { role: "assistant" as const, content: "Understood, I have the Bitgrass guide context." }]
+        : []),
+      { role: "user", content: message },
+    ];
+
+    const completion = await openclaw.chat.completions.create({
+      model: "openclaw",
+      messages,
     });
 
-    let reply = result.text?.trim() || "How can I help?";
-    if (reply.includes(" - ")) {
-      reply = reply.replace(/\s-\s/g, "\n- ");
-    }
-    if (reply.includes("**")) {
-      reply = reply.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    }
+    let reply = completion.choices[0]?.message?.content?.trim() || "How can I help?";
+    reply = reply.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
     return Response.json({ reply, intent: { type: "unknown" as const } });
   } catch (err: any) {
@@ -952,9 +942,9 @@ export async function POST(request: Request) {
         : "Unknown error";
     return Response.json({
       reply:
-        "OpenAI request failed: " +
+        "OpenClaw request failed: " +
         messageText +
-        ". Please confirm OPENAI_API_KEY is valid and restart the dev server.",
+        ". Make sure the OpenClaw gateway is running (`openclaw gateway status`) and OPENCLAW_TOKEN is set.",
       intent: { type: "unknown" as const },
     });
   }
