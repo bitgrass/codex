@@ -1444,18 +1444,16 @@ const ClimateAgentPage = () => {
     try {
     const agent = await interpret(trimmed, history);
 
-    updateMessage(statusId, {
-      content: agent.reply,
-      status: undefined,
-    });
-
     if (agent.intent.type === "unknown") {
+      updateMessage(statusId, {
+        content: agent.reply,
+        status: undefined,
+      });
       return;
     }
 
     if (looksLikeQuestion && isWriteIntent(agent.intent)) {
-      addMessage({
-        role: "assistant",
+      updateMessage(statusId, {
         content:
           "I can explain how to do that, but I will not execute transactions from a question. " +
           'If you want me to proceed, give a direct command like: "Swap 10 USDC to ETH", ' +
@@ -1467,9 +1465,10 @@ const ClimateAgentPage = () => {
 
       const intent = agent.intent;
 
-      actionId = addMessage({
-        role: "assistant",
-        content: "Preparing transaction...",
+      // Reuse the status message bubble — no separate confirmation needed
+      actionId = statusId;
+      updateMessage(actionId, {
+        content: "...",
         status: "pending",
       });
 

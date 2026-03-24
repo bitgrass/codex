@@ -668,55 +668,6 @@ function getTierBco2EducationReply(message: string) {
   return [tierSummary, bco2Summary, earnFlow, capacity].join(" ");
 }
 
-function fallbackResponse(message: string) {
-  const transfer = parseTransferRegex(message);
-  if (transfer.type !== "unknown") {
-    return {
-      reply: "Got it - preparing that transfer now.",
-      intent: transfer,
-    };
-  }
-
-  const balance = parseBalanceRegex(message);
-  if (balance.type !== "unknown") {
-    return {
-      reply: "Got it - checking your Base wallet balances now.",
-      intent: balance,
-    };
-  }
-
-  const buyPlot = parseBuyPlotRegex(message);
-  if (buyPlot.type !== "unknown") {
-    return {
-      reply: `Got it - preparing to buy a ${buyPlot.tier} ${buyPlot.size}m² plot.`,
-      intent: buyPlot,
-    };
-  }
-
-  const nfts = parseNftsRegex(message);
-  if (nfts.type !== "unknown") {
-    return {
-      reply: "Got it - checking your Base NFTs now.",
-      intent: nfts,
-    };
-  }
-
-  const swap = parseSwapRegex(message);
-  if (swap.type !== "unknown") {
-    return {
-      reply: "Got it - preparing that swap now.",
-      intent: swap,
-    };
-  }
-
-  return {
-    reply:
-      "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
-      "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²). " +
-      "Try: Buy a Standard 100m² plot.",
-    intent: { type: "unknown" as const },
-  };
-}
 
 export async function POST(request: Request) {
   const json = await request.json().catch(() => null);
@@ -744,61 +695,11 @@ export async function POST(request: Request) {
     const guideContext = buildGuideContext(message, guideText);
     const isDocsQuestion = isBitgrassDocsQuestion(message);
 
-    if (isPortfolioTransactionsQuestion(message)) {
-      return Response.json({
-        reply:
-          "Yes. In Portfolio, open the Transactions tab (the third tab) to see your transaction history, including type, value, date/time, and a View Transaction link.",
-        intent: { type: "unknown" as const },
-      });
-    }
-
-    if (isWhereTransactionsQuestion(message)) {
-      return Response.json({
-        reply:
-          "You can see transactions in two places: Portfolio -> Transactions tab, and your wallet Activity (or BaseScan) for full onchain details.",
-        intent: { type: "unknown" as const },
-      });
-    }
-
-    if (isOwnPlotQuestion(message)) {
-      return Response.json({
-        reply:
-          "Own Plot is the page for discovering and buying Bitgrass tokenized land plots (Standard, Premium, Legendary). After purchase, your plots appear in Portfolio (NFTs tab) where you can manage owned assets.",
-        intent: { type: "unknown" as const },
-      });
-    }
-
-    if (isBtgClaimFormulaQuestion(message)) {
-      return Response.json({
-        reply:
-          "Claimable BTG is the amount available to claim from leaderboard rewards. " +
-          "It is calculated from your eligible early-adopter plots: Standard = 5,000 BTG each, " +
-          "Premium = 20,000 BTG each, Legendary = 35,000 BTG each. " +
-          "Example: 8 Standard + 1 Premium + 1 Legendary = 95,000 BTG.",
-        intent: { type: "unknown" as const },
-      });
-    }
-
-    const plotDefinitionReply = getPlotDefinitionReply(message);
-    if (plotDefinitionReply) {
-      return Response.json({
-        reply: plotDefinitionReply,
-        intent: { type: "unknown" as const },
-      });
-    }
-
-    const tierBco2EducationReply = getTierBco2EducationReply(message);
-    if (tierBco2EducationReply) {
-      return Response.json({
-        reply: tierBco2EducationReply,
-        intent: { type: "unknown" as const },
-      });
-    }
 
     const claim = parseClaimRegex(message);
     if (claim.type !== "unknown" && !isInformationalForIntent(message, claim.type)) {
       const reply = walletConnected
-        ? "Got it - claiming your BCO2 rewards now."
+        ? ""
         : "Please connect your wallet first so I can claim your BCO2 rewards.";
       return Response.json({ reply, intent: claim });
     }
@@ -808,8 +709,7 @@ export async function POST(request: Request) {
       leaderboardTop.type !== "unknown" &&
       !isInformationalForIntent(message, leaderboardTop.type)
     ) {
-      const reply = "Got it - fetching the top leaderboard now.";
-      return Response.json({ reply, intent: leaderboardTop });
+      return Response.json({ reply: "", intent: leaderboardTop });
     }
 
     const leaderboardRank = parseLeaderboardRankRegex(message);
@@ -818,7 +718,7 @@ export async function POST(request: Request) {
       !isInformationalForIntent(message, leaderboardRank.type)
     ) {
       const reply = walletConnected
-        ? "Got it - checking your leaderboard rank now."
+        ? ""
         : "Please connect your wallet first so I can check your leaderboard rank.";
       return Response.json({ reply, intent: leaderboardRank });
     }
@@ -826,7 +726,7 @@ export async function POST(request: Request) {
     const btgClaim = parseBtgClaimRegex(message);
     if (btgClaim.type !== "unknown" && !isInformationalForIntent(message, btgClaim.type)) {
       const reply = walletConnected
-        ? "Got it - checking your claimed BTG amount now."
+        ? ""
         : "Please connect your wallet first so I can check your claimed BTG amount.";
       return Response.json({ reply, intent: btgClaim });
     }
@@ -835,9 +735,7 @@ export async function POST(request: Request) {
     const earnings = parseEarningsRegex(message);
     if (earnings.type !== "unknown" && !isInformationalForIntent(message, earnings.type)) {
       const reply = walletConnected
-        ? earnings.type === "total_earned"
-          ? "Got it - checking your total BCO2 earned now."
-          : "Got it - checking your current BCO2 earnings now."
+        ? ""
         : "Please connect your wallet first so I can check your BCO2 earnings.";
       return Response.json({ reply, intent: earnings });
     }
@@ -845,7 +743,7 @@ export async function POST(request: Request) {
     const balance = parseBalanceRegex(message);
     if (balance.type !== "unknown" && !isInformationalForIntent(message, balance.type)) {
       const reply = walletConnected
-        ? "Got it - checking your Base wallet balances now."
+        ? ""
         : "Please connect your wallet first so I can check your Base balances.";
       return Response.json({ reply, intent: balance });
     }
@@ -853,7 +751,7 @@ export async function POST(request: Request) {
     const buyPlot = parseBuyPlotRegex(message);
     if (buyPlot.type !== "unknown" && !isInformationalForIntent(message, buyPlot.type)) {
       const reply = walletConnected
-        ? `Got it - preparing to buy a ${buyPlot.tier} ${buyPlot.size}m² plot.`
+        ? ""
         : "Please connect your wallet first so I can buy a plot.";
       return Response.json({ reply, intent: buyPlot });
     }
@@ -861,7 +759,7 @@ export async function POST(request: Request) {
     const stake = parseStakeRegex(message);
     if (stake.type !== "unknown" && !isInformationalForIntent(message, stake.type)) {
       const reply = walletConnected
-        ? "Got it - preparing to stake your land plots now."
+        ? ""
         : "Please connect your wallet first so I can stake your land plots.";
       return Response.json({ reply, intent: stake });
     }
@@ -869,7 +767,7 @@ export async function POST(request: Request) {
     const unstake = parseUnstakeRegex(message);
     if (unstake.type !== "unknown" && !isInformationalForIntent(message, unstake.type)) {
       const reply = walletConnected
-        ? "Got it - preparing to unstake your land plots now."
+        ? ""
         : "Please connect your wallet first so I can unstake your land plots.";
       return Response.json({ reply, intent: unstake });
     }
@@ -877,21 +775,19 @@ export async function POST(request: Request) {
     const nfts = parseNftsRegex(message);
     if (nfts.type !== "unknown" && !isInformationalForIntent(message, nfts.type)) {
       const reply = walletConnected
-        ? "Got it - checking your Base NFTs now."
+        ? ""
         : "Please connect your wallet first so I can check your Base NFTs.";
       return Response.json({ reply, intent: nfts });
     }
 
     const transfer = parseTransferRegex(message);
     if (transfer.type !== "unknown" && !isInformationalForIntent(message, transfer.type)) {
-      const reply = "Got it - preparing that transfer now.";
-      return Response.json({ reply, intent: transfer });
+      return Response.json({ reply: "", intent: transfer });
     }
 
     const swap = parseSwapRegex(message);
     if (swap.type !== "unknown" && !isInformationalForIntent(message, swap.type)) {
-      const reply = "Got it - preparing that swap now.";
-      return Response.json({ reply, intent: swap });
+      return Response.json({ reply: "", intent: swap });
     }
 
     if (isDocsQuestion && !guideContext) {

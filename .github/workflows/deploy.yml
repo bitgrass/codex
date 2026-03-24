@@ -2,7 +2,7 @@ name: Deploy (OpenNext -> Cloudflare)
 
 on:
   push:
-    branches: ["rpc"]
+    branches: ["openclaw-agent"]
   workflow_dispatch:
 
 jobs:
