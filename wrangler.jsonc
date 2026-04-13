@@ -17,6 +17,13 @@
       "service": "test-dapp"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "CHAT_HISTORY_KV",
+      "id": "f4a41af1e7c046e6a29ce329c83eefd6",
+      "preview_id": "706723af16b84b28ba10247e9fe78657"
+    }
+  ],
   "r2_buckets": [],
   "routes": [
     {

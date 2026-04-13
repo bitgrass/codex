@@ -698,86 +698,52 @@ export async function POST(request: Request) {
 
     const claim = parseClaimRegex(message);
     if (claim.type !== "unknown" && !isInformationalForIntent(message, claim.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can claim your BCO2 rewards.";
-      return Response.json({ reply, intent: claim });
+      return Response.json({ reply: "", intent: claim });
     }
 
     const leaderboardTop = parseLeaderboardTopRegex(message);
-    if (
-      leaderboardTop.type !== "unknown" &&
-      !isInformationalForIntent(message, leaderboardTop.type)
-    ) {
+    if (leaderboardTop.type !== "unknown" && !isInformationalForIntent(message, leaderboardTop.type)) {
       return Response.json({ reply: "", intent: leaderboardTop });
     }
 
     const leaderboardRank = parseLeaderboardRankRegex(message);
-    if (
-      leaderboardRank.type !== "unknown" &&
-      !isInformationalForIntent(message, leaderboardRank.type)
-    ) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can check your leaderboard rank.";
-      return Response.json({ reply, intent: leaderboardRank });
+    if (leaderboardRank.type !== "unknown" && !isInformationalForIntent(message, leaderboardRank.type)) {
+      return Response.json({ reply: "", intent: leaderboardRank });
     }
 
     const btgClaim = parseBtgClaimRegex(message);
     if (btgClaim.type !== "unknown" && !isInformationalForIntent(message, btgClaim.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can check your claimed BTG amount.";
-      return Response.json({ reply, intent: btgClaim });
+      return Response.json({ reply: "", intent: btgClaim });
     }
 
-    // Deterministic executable intents should run before LLM chat responses.
     const earnings = parseEarningsRegex(message);
     if (earnings.type !== "unknown" && !isInformationalForIntent(message, earnings.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can check your BCO2 earnings.";
-      return Response.json({ reply, intent: earnings });
+      return Response.json({ reply: "", intent: earnings });
     }
 
     const balance = parseBalanceRegex(message);
     if (balance.type !== "unknown" && !isInformationalForIntent(message, balance.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can check your Base balances.";
-      return Response.json({ reply, intent: balance });
+      return Response.json({ reply: "", intent: balance });
     }
 
     const buyPlot = parseBuyPlotRegex(message);
     if (buyPlot.type !== "unknown" && !isInformationalForIntent(message, buyPlot.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can buy a plot.";
-      return Response.json({ reply, intent: buyPlot });
+      return Response.json({ reply: "", intent: buyPlot });
     }
 
     const stake = parseStakeRegex(message);
     if (stake.type !== "unknown" && !isInformationalForIntent(message, stake.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can stake your land plots.";
-      return Response.json({ reply, intent: stake });
+      return Response.json({ reply: "", intent: stake });
     }
 
     const unstake = parseUnstakeRegex(message);
     if (unstake.type !== "unknown" && !isInformationalForIntent(message, unstake.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can unstake your land plots.";
-      return Response.json({ reply, intent: unstake });
+      return Response.json({ reply: "", intent: unstake });
     }
 
     const nfts = parseNftsRegex(message);
     if (nfts.type !== "unknown" && !isInformationalForIntent(message, nfts.type)) {
-      const reply = walletConnected
-        ? ""
-        : "Please connect your wallet first so I can check your Base NFTs.";
-      return Response.json({ reply, intent: nfts });
+      return Response.json({ reply: "", intent: nfts });
     }
 
     const transfer = parseTransferRegex(message);

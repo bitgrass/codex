@@ -41,6 +41,39 @@ type ChatMessage = {
   selectableNfts?: boolean;
 };
 
+type ChatConversationSummary = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PersistedChatNft = NonNullable<ChatMessage["nfts"]>[number];
+
+type PersistedChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  status?: ChatStatus;
+  txHash?: string;
+  showPortfolioLink?: boolean;
+  nfts?: PersistedChatNft[];
+  nftTruncated?: boolean;
+  selectableNfts?: boolean;
+};
+
+type ChatHistoryPayload = {
+  conversations: ChatConversationSummary[];
+  activeConversationId: string | null;
+  messages: PersistedChatMessage[];
+};
+
+type LocalChatHistoryCache = {
+  conversations: ChatConversationSummary[];
+  activeConversationId: string | null;
+  byConversation: Record<string, PersistedChatMessage[]>;
+};
+
 const BASE_CHAIN_ID = 8453;
 const QUICK_PROMPTS = [
   "Check my wallet Balance",
@@ -48,6 +81,13 @@ const QUICK_PROMPTS = [
   "Check my landplots",
   "Buy Standard 100m2 plot",
 ];
+const CHAT_HISTORY_STORAGE_PREFIX = "climate-agent-history-v1";
+const MAX_LOCAL_CONVERSATIONS = 30;
+const MAX_LOCAL_MESSAGES = 80;
+const DEFAULT_CHAT_TITLE = "New chat";
+const DEFAULT_WELCOME_CONTENT =
+  "<strong>How can I help you today?</strong>\n" +
+  "I can execute transactions, check your assets, explain platform features, and answer your climate-related questions.";
 
 const ETH_TOKEN: Token = {
   name: "ETH",
@@ -209,6 +249,119 @@ function formatPendingAmount(amount: string) {
 
 function formatUsd(value: number) {
   return value.toFixed(2);
+}
+
+function safeParseJson<T>(value: string | null): T | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+function buildWelcomeMessage(): ChatMessage {
+  return {
+    id: "welcome",
+    role: "assistant",
+    content: DEFAULT_WELCOME_CONTENT,
+  };
+}
+
+function createConversationId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `conv-${crypto.randomUUID()}`;
+  }
+  return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function deriveConversationTitle(messages: PersistedChatMessage[]) {
+  const firstUser = messages.find((message) => message.role === "user");
+  if (!firstUser) return DEFAULT_CHAT_TITLE;
+  const clean = firstUser.content.replace(/\s+/g, " ").trim();
+  if (!clean) return DEFAULT_CHAT_TITLE;
+  if (clean.length <= 48) return clean;
+  return `${clean.slice(0, 45)}...`;
+}
+
+function normalizePersistedMessages(messages: PersistedChatMessage[]): ChatMessage[] {
+  const normalized = messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      id: message.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: message.role,
+      content: message.content,
+      status: message.status,
+      txHash: message.txHash,
+      showPortfolioLink: message.showPortfolioLink,
+      nfts: message.nfts?.map((nft) => ({
+        id: nft.id,
+        name: nft.name,
+        tokenId: nft.tokenId,
+        image: nft.image,
+        collectionName: nft.collectionName,
+        status: nft.status,
+      })),
+      nftTruncated: message.nftTruncated,
+      selectableNfts: message.selectableNfts,
+    }));
+  return normalized.length ? normalized : [buildWelcomeMessage()];
+}
+
+function toPersistedMessages(messages: ChatMessage[]): PersistedChatMessage[] {
+  return messages
+    .slice(-MAX_LOCAL_MESSAGES)
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      status: message.status,
+      txHash: message.txHash,
+      showPortfolioLink: message.showPortfolioLink,
+      nfts: message.nfts?.map((nft) => ({
+        id: nft.id,
+        name: nft.name,
+        tokenId: nft.tokenId,
+        image: nft.image,
+        collectionName: nft.collectionName,
+        status: nft.status,
+      })),
+      nftTruncated: message.nftTruncated,
+      selectableNfts: message.selectableNfts,
+    }));
+}
+
+function formatConversationUpdatedAt(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function upsertConversationSummary(
+  conversations: ChatConversationSummary[],
+  update: {
+    id: string;
+    title: string;
+    updatedAt: string;
+    createdAt?: string;
+  },
+) {
+  const existing = conversations.find((item) => item.id === update.id);
+  const nextEntry: ChatConversationSummary = {
+    id: update.id,
+    title: update.title,
+    createdAt: existing?.createdAt || update.createdAt || update.updatedAt,
+    updatedAt: update.updatedAt,
+  };
+  return [nextEntry, ...conversations.filter((item) => item.id !== update.id)].slice(
+    0,
+    MAX_LOCAL_CONVERSATIONS,
+  );
 }
 
 function parseTransferLocal(text: string): ParsedIntent | null {
@@ -1078,15 +1231,12 @@ const ClimateAgentPage = () => {
   const [lastVoicePhrase, setLastVoicePhrase] = useState("");
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechSupported, setSpeechSupported] = useState(true);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "<strong>How can I help you today?</strong>\n" +
-        "I can execute transactions, check your assets, explain platform features, and answer your climate-related questions.",
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([buildWelcomeMessage()]);
+  const [conversations, setConversations] = useState<ChatConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyReady, setHistoryReady] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [showStakePendingToast, setShowStakePendingToast] = useState(false);
   const [stakeProgress, setStakeProgress] = useState({ current: 0, total: 0 });
   const [stakePendingType, setStakePendingType] = useState<"stake" | "unstake">(
@@ -1103,6 +1253,7 @@ const ClimateAgentPage = () => {
   const suppressVoiceSubmitRef = useRef(false);
   const lastTranscriptRef = useRef("");
   const speechIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const nextMessageId = () =>
     `msg-${Date.now()}-${messageIdRef.current++}`;
@@ -1120,6 +1271,250 @@ const ClimateAgentPage = () => {
       )
     );
   };
+
+  const normalizedAddress = address?.toLowerCase() || null;
+  const historyStorageKey = normalizedAddress
+    ? `${CHAT_HISTORY_STORAGE_PREFIX}:${normalizedAddress}`
+    : null;
+
+  const createNewConversation = () => {
+    const now = new Date().toISOString();
+    const conversationId = createConversationId();
+    setActiveConversationId(conversationId);
+    setMessages([buildWelcomeMessage()]);
+    setSelectedStakeIds([]);
+    setStakeSelectionMessageId(null);
+    setConversations((prev) =>
+      upsertConversationSummary(prev, {
+        id: conversationId,
+        title: DEFAULT_CHAT_TITLE,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  };
+
+  const openConversation = async (conversationId: string) => {
+    if (conversationId === activeConversationId) return;
+    setActiveConversationId(conversationId);
+    setSelectedStakeIds([]);
+    setStakeSelectionMessageId(null);
+
+    if (typeof window !== "undefined" && historyStorageKey) {
+      const local = safeParseJson<LocalChatHistoryCache>(
+        window.localStorage.getItem(historyStorageKey),
+      );
+      const cachedMessages = local?.byConversation?.[conversationId];
+      if (cachedMessages?.length) {
+        setMessages(normalizePersistedMessages(cachedMessages));
+      } else {
+        setMessages([buildWelcomeMessage()]);
+      }
+    }
+
+    if (!normalizedAddress) return;
+
+    try {
+      setHistoryLoading(true);
+      const response = await fetch(
+        `/api/agent/chat/history?address=${encodeURIComponent(normalizedAddress)}&conversationId=${encodeURIComponent(conversationId)}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return;
+      const payload = (await response.json().catch(() => null)) as ChatHistoryPayload | null;
+      if (!payload) return;
+      setMessages(normalizePersistedMessages(payload.messages));
+      if (typeof window !== "undefined" && historyStorageKey) {
+        const local = safeParseJson<LocalChatHistoryCache>(
+          window.localStorage.getItem(historyStorageKey),
+        );
+        const nextLocal: LocalChatHistoryCache = {
+          conversations: payload.conversations,
+          activeConversationId: conversationId,
+          byConversation: {
+            ...(local?.byConversation || {}),
+            [conversationId]: payload.messages,
+          },
+        };
+        window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
+      }
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setHistoryReady(false);
+    setHistoryError(null);
+    setSelectedStakeIds([]);
+    setStakeSelectionMessageId(null);
+
+    if (!normalizedAddress) {
+      setConversations([]);
+      setActiveConversationId(null);
+      setMessages([buildWelcomeMessage()]);
+      setHistoryReady(true);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const initialId = createConversationId();
+    const initialSummary: ChatConversationSummary = {
+      id: initialId,
+      title: DEFAULT_CHAT_TITLE,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let hasLocalSeed = false;
+
+    if (typeof window !== "undefined" && historyStorageKey) {
+      const local = safeParseJson<LocalChatHistoryCache>(
+        window.localStorage.getItem(historyStorageKey),
+      );
+      if (local && Array.isArray(local.conversations) && local.conversations.length > 0) {
+        hasLocalSeed = true;
+        const localActiveId =
+          local.activeConversationId && local.conversations.some((item) => item.id === local.activeConversationId)
+            ? local.activeConversationId
+            : local.conversations[0].id;
+        setConversations(local.conversations.slice(0, MAX_LOCAL_CONVERSATIONS));
+        setActiveConversationId(localActiveId);
+        setMessages(normalizePersistedMessages(local.byConversation?.[localActiveId] || []));
+      }
+    }
+
+    if (!hasLocalSeed) {
+      setConversations([initialSummary]);
+      setActiveConversationId(initialId);
+      setMessages([buildWelcomeMessage()]);
+    }
+
+    let cancelled = false;
+    const hydrateFromServer = async () => {
+      try {
+        setHistoryLoading(true);
+        const response = await fetch(
+          `/api/agent/chat/history?address=${encodeURIComponent(normalizedAddress)}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) {
+          if (!hasLocalSeed) {
+            setHistoryError("Using local-only chat history. Add Cloudflare KV to persist server-side.");
+          }
+          return;
+        }
+        const payload = (await response.json().catch(() => null)) as ChatHistoryPayload | null;
+        if (!payload || cancelled) return;
+
+        if (!payload.conversations.length) {
+          if (!hasLocalSeed) {
+            setConversations([initialSummary]);
+            setActiveConversationId(initialId);
+            setMessages([buildWelcomeMessage()]);
+          }
+          return;
+        }
+
+        const nextActiveId =
+          payload.activeConversationId &&
+          payload.conversations.some((item) => item.id === payload.activeConversationId)
+            ? payload.activeConversationId
+            : payload.conversations[0].id;
+
+        setConversations(payload.conversations.slice(0, MAX_LOCAL_CONVERSATIONS));
+        setActiveConversationId(nextActiveId);
+        setMessages(normalizePersistedMessages(payload.messages));
+
+        if (typeof window !== "undefined" && historyStorageKey) {
+          const local = safeParseJson<LocalChatHistoryCache>(
+            window.localStorage.getItem(historyStorageKey),
+          );
+          const nextLocal: LocalChatHistoryCache = {
+            conversations: payload.conversations.slice(0, MAX_LOCAL_CONVERSATIONS),
+            activeConversationId: nextActiveId,
+            byConversation: {
+              ...(local?.byConversation || {}),
+              [nextActiveId]: payload.messages,
+            },
+          };
+          window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
+        }
+      } catch {
+        if (!hasLocalSeed) {
+          setHistoryError("Unable to load cloud history right now. Working with local cache.");
+        }
+      } finally {
+        if (!cancelled) {
+          setHistoryLoading(false);
+          setHistoryReady(true);
+        }
+      }
+    };
+
+    void hydrateFromServer();
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedAddress, historyStorageKey]);
+
+  useEffect(() => {
+    if (!historyStorageKey || !activeConversationId) return;
+    if (!historyReady || typeof window === "undefined") return;
+    const existing = safeParseJson<LocalChatHistoryCache>(
+      window.localStorage.getItem(historyStorageKey),
+    );
+    const persistedMessages = toPersistedMessages(messages);
+    const nextLocal: LocalChatHistoryCache = {
+      conversations,
+      activeConversationId,
+      byConversation: {
+        ...(existing?.byConversation || {}),
+        [activeConversationId]: persistedMessages,
+      },
+    };
+    window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
+  }, [historyStorageKey, conversations, activeConversationId, messages, historyReady]);
+
+  useEffect(() => {
+    if (!normalizedAddress || !activeConversationId) return;
+    if (!historyReady) return;
+
+    const persistedMessages = toPersistedMessages(messages);
+    const now = new Date().toISOString();
+    const title = deriveConversationTitle(persistedMessages);
+
+    setConversations((prev) =>
+      upsertConversationSummary(prev, {
+        id: activeConversationId,
+        title,
+        updatedAt: now,
+      }),
+    );
+
+    if (saveHistoryTimerRef.current) {
+      clearTimeout(saveHistoryTimerRef.current);
+    }
+    saveHistoryTimerRef.current = setTimeout(() => {
+      void fetch("/api/agent/chat/history", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: normalizedAddress,
+          conversationId: activeConversationId,
+          title,
+          messages: persistedMessages,
+        }),
+      }).catch(() => {
+        // Keep local cache even when cloud sync fails.
+      });
+    }, 450);
+
+    return () => {
+      if (saveHistoryTimerRef.current) {
+        clearTimeout(saveHistoryTimerRef.current);
+      }
+    };
+  }, [normalizedAddress, activeConversationId, messages, historyReady]);
 
   const renderMessageHtml = (content: string) => {
     const escaped = content
@@ -1198,9 +1593,7 @@ const ClimateAgentPage = () => {
 
     if (!res.ok) {
       return {
-        reply:
-          "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
-          "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base.",
+        reply: "",
         intent: { type: "unknown", reason: "Agent service error." },
       };
     }
@@ -1211,9 +1604,7 @@ const ClimateAgentPage = () => {
       | null;
     if (!json || typeof json !== "object") {
       return {
-        reply:
-          "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
-          "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base.",
+        reply: "",
         intent: { type: "unknown", reason: "Could not understand your request." },
       };
     }
@@ -1221,79 +1612,39 @@ const ClimateAgentPage = () => {
     // Backward compatibility: handle older { type, ... } responses.
     if ("type" in json) {
       const legacy = json as ParsedIntent;
-      const reply =
-        legacy.type === "swap"
-          ? "Got it — preparing that swap now."
-          : legacy.type === "transfer"
-            ? "Got it — preparing that transfer now."
-            : "I can help with swaps (ETH <-> USDC) or transfers (ETH/USDC) on Base. " +
-            "Try: Swap 0.0001 ETH to USDC or Send 0.0001 ETH to 0x...";
-      return { reply, intent: legacy };
+      return { reply: "", intent: legacy };
     }
 
     if (!("intent" in json)) {
       return {
-        reply:
-          "I can help with swaps (ETH <-> USDC), transfers (ETH/USDC), balances, NFTs, " +
-          "or buying plots (Standard 100m², Premium 500m², Legendary 1000m²) on Base.",
+        reply: "",
         intent: { type: "unknown", reason: "Could not understand your request." },
       };
     }
 
     if (json.intent.type === "unknown") {
       const localTransfer = parseTransferLocal(text);
-      if (localTransfer) {
-        return { reply: "Got it — preparing that transfer now.", intent: localTransfer };
-      }
+      if (localTransfer) return { reply: "", intent: localTransfer };
       const localBalance = parseBalanceLocal(text);
-      if (localBalance) {
-        return { reply: "Got it — checking your Base wallet balances now.", intent: localBalance };
-      }
+      if (localBalance) return { reply: "", intent: localBalance };
       const localEarnings = parseEarningsLocal(text);
-      if (localEarnings) {
-        return {
-          reply:
-            localEarnings.type === "total_earned"
-              ? "Got it — checking your total BCO2 earned now."
-              : "Got it — checking your current BCO2 earnings now.",
-          intent: localEarnings,
-        };
-      }
+      if (localEarnings) return { reply: "", intent: localEarnings };
       const localClaim = parseClaimLocal(text);
-      if (localClaim) {
-        return { reply: "Got it — claiming your BCO2 rewards now.", intent: localClaim };
-      }
+      if (localClaim) return { reply: "", intent: localClaim };
       const localLeaderboardTop = parseLeaderboardTopLocal(text);
-      if (localLeaderboardTop) {
-        return { reply: "Got it — fetching the top leaderboard now.", intent: localLeaderboardTop };
-      }
+      if (localLeaderboardTop) return { reply: "", intent: localLeaderboardTop };
       const localLeaderboard = parseLeaderboardLocal(text);
-      if (localLeaderboard) {
-        return { reply: "Got it — checking your leaderboard rank now.", intent: localLeaderboard };
-      }
+      if (localLeaderboard) return { reply: "", intent: localLeaderboard };
       const localBtgClaim = parseBtgClaimLocal(text);
-      if (localBtgClaim) {
-        return { reply: "Got it — checking your claimed BTG amount now.", intent: localBtgClaim };
-      }
+      if (localBtgClaim) return { reply: "", intent: localBtgClaim };
       const localStake = parseStakeLocal(text);
-      if (localStake) {
-        return { reply: "Got it — preparing to stake your land plots now.", intent: localStake };
-      }
+      if (localStake) return { reply: "", intent: localStake };
       const localUnstake = parseUnstakeLocal(text);
-      if (localUnstake) {
-        return { reply: "Got it — preparing to unstake your land plots now.", intent: localUnstake };
-      }
+      if (localUnstake) return { reply: "", intent: localUnstake };
       const localBuy = parseBuyPlotLocal(text);
-      if (localBuy) {
-        return {
-          reply: `Got it — preparing to buy a ${localBuy.tier} ${localBuy.size}m² plot.`,
-          intent: localBuy,
-        };
-      }
+      if (localBuy) return { reply: "", intent: localBuy };
       const localNfts = parseNftsLocal(text);
-      if (localNfts) {
-        return { reply: "Got it — checking your Base NFTs now.", intent: localNfts };
-      }
+      if (localNfts) return { reply: "", intent: localNfts };
     }
 
     return json;
@@ -1391,6 +1742,20 @@ const ClimateAgentPage = () => {
   const submitMessage = async (rawInput: string, options?: { skipStop?: boolean }) => {
     const trimmed = rawInput.trim();
     if (!trimmed || isWorking) return;
+
+    if (!activeConversationId && normalizedAddress) {
+      const now = new Date().toISOString();
+      const conversationId = createConversationId();
+      setActiveConversationId(conversationId);
+      setConversations((prev) =>
+        upsertConversationSummary(prev, {
+          id: conversationId,
+          title: DEFAULT_CHAT_TITLE,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+    }
 
     const looksLikeQuestion =
       /\?\s*$/.test(trimmed) ||
@@ -2771,6 +3136,53 @@ const ClimateAgentPage = () => {
 
             <div className="box mt-6 flex flex-col">
               <div className="box-body flex flex-col gap-4">
+                <div className="rounded-lg border border-defaultborder/30 bg-camel10/40 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-medium text-defaulttextcolor">
+                      Discussions
+                    </div>
+                    <button
+                      type="button"
+                      onClick={createNewConversation}
+                      className="px-3 py-1.5 rounded-md bg-secondary text-white text-xs font-medium hover:bg-secondary/90 transition"
+                    >
+                      New chat
+                    </button>
+                  </div>
+                  <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                    {conversations.map((conversation) => (
+                      <button
+                        key={conversation.id}
+                        type="button"
+                        onClick={() => void openConversation(conversation.id)}
+                        className={`min-w-[180px] max-w-[220px] text-left rounded-md border px-3 py-2 transition ${
+                          conversation.id === activeConversationId
+                            ? "border-secondary bg-secondary/10"
+                            : "border-defaultborder/30 bg-white/70 dark:bg-bodybg hover:border-secondary/60"
+                        }`}
+                      >
+                        <div className="truncate text-xs font-semibold text-defaulttextcolor">
+                          {conversation.title || DEFAULT_CHAT_TITLE}
+                        </div>
+                        <div className="mt-1 text-[10px] text-defaulttextcolor/60">
+                          {formatConversationUpdatedAt(conversation.updatedAt)}
+                        </div>
+                      </button>
+                    ))}
+                    {!conversations.length && (
+                      <div className="text-xs text-defaulttextcolor/70 py-2">
+                        No history yet. Start with your first message.
+                      </div>
+                    )}
+                  </div>
+                  {(historyLoading || historyError) && (
+                    <div className="mt-2 text-[11px] text-defaulttextcolor/70">
+                      {historyLoading
+                        ? "Loading history..."
+                        : historyError || ""}
+                    </div>
+                  )}
+                </div>
                 <div
                   className="flex flex-col gap-3 overflow-y-auto"
                   style={{ minHeight: "300px", maxHeight: "340px" }}
