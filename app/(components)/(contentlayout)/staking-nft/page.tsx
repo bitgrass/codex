@@ -1,6 +1,7 @@
 "use client"
 import Seo from '@/shared/layout-components/seo/seo'
 import React, { Fragment, useState, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { createThirdwebClient, getContract, defineChain, prepareContractCall, sendTransaction, readContract } from "thirdweb"
 import { isApprovedForAll, setApprovalForAll, balanceOf } from "thirdweb/extensions/erc721"
 import { useConnectedAddress } from '../useConnectedAddress'
@@ -50,6 +51,7 @@ const BASE_CHAIN_ID = 8453
 
 const StakingNFT = () => {
     const { address, client: walletClient, clientReady } = useConnectedAddress()
+    const searchParams = useSearchParams()
     const { switchChainAsync } = useSwitchChain()
     const { user } = usePrivy()
     const [selectedNFTs, setSelectedNFTs] = useState<string[]>([])
@@ -77,6 +79,17 @@ const StakingNFT = () => {
     const [legendaryStats, setLegendaryStats] = useState({ staked: 0, totalStaked: 0, earnings: "0" })
     const [premiumStats, setPremiumStats] = useState({ staked: 0, totalStaked: 0, earnings: "0" })
     const [standardStats, setStandardStats] = useState({ staked: 0, totalStaked: 0, earnings: "0" })
+
+    useEffect(() => {
+        const tab = (searchParams.get("tab") || "").toLowerCase()
+        if (["staked-plot", "staked-plots", "staked", "unstake"].includes(tab)) {
+            setActiveTab("unstake")
+            return
+        }
+        if (["stake", "available"].includes(tab)) {
+            setActiveTab("stake")
+        }
+    }, [searchParams])
 
     // Get contracts for all pools
     const legendaryPoolContract = getContract({

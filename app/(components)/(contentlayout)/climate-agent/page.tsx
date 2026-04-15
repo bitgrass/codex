@@ -41,13 +41,6 @@ type ChatMessage = {
   selectableNfts?: boolean;
 };
 
-type ChatConversationSummary = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 type PersistedChatNft = NonNullable<ChatMessage["nfts"]>[number];
 
 type PersistedChatMessage = {
@@ -63,15 +56,13 @@ type PersistedChatMessage = {
 };
 
 type ChatHistoryPayload = {
-  conversations: ChatConversationSummary[];
-  activeConversationId: string | null;
   messages: PersistedChatMessage[];
 };
 
 type LocalChatHistoryCache = {
-  conversations: ChatConversationSummary[];
-  activeConversationId: string | null;
-  byConversation: Record<string, PersistedChatMessage[]>;
+  messages?: PersistedChatMessage[];
+  activeConversationId?: string | null;
+  byConversation?: Record<string, PersistedChatMessage[]>;
 };
 
 const BASE_CHAIN_ID = 8453;
@@ -82,12 +73,13 @@ const QUICK_PROMPTS = [
   "Buy Standard 100m2 plot",
 ];
 const CHAT_HISTORY_STORAGE_PREFIX = "climate-agent-history-v1";
-const MAX_LOCAL_CONVERSATIONS = 30;
 const MAX_LOCAL_MESSAGES = 80;
-const DEFAULT_CHAT_TITLE = "New chat";
+const SINGLE_CHAT_CONVERSATION_ID = "single-thread";
 const DEFAULT_WELCOME_CONTENT =
   "<strong>How can I help you today?</strong>\n" +
   "I can execute transactions, check your assets, explain platform features, and answer your climate-related questions.";
+const EARN_STAKED_PLOTS_URL = "/staking-nft?tab=staked-plot";
+const EARN_UNSTAKED_PLOTS_URL = "/staking-nft?tab=stake";
 
 const ETH_TOKEN: Token = {
   name: "ETH",
@@ -268,20 +260,8 @@ function buildWelcomeMessage(): ChatMessage {
   };
 }
 
-function createConversationId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `conv-${crypto.randomUUID()}`;
-  }
-  return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function deriveConversationTitle(messages: PersistedChatMessage[]) {
-  const firstUser = messages.find((message) => message.role === "user");
-  if (!firstUser) return DEFAULT_CHAT_TITLE;
-  const clean = firstUser.content.replace(/\s+/g, " ").trim();
-  if (!clean) return DEFAULT_CHAT_TITLE;
-  if (clean.length <= 48) return clean;
-  return `${clean.slice(0, 45)}...`;
+function getSingleConversationId(address: string) {
+  return `${SINGLE_CHAT_CONVERSATION_ID}:${address}`;
 }
 
 function normalizePersistedMessages(messages: PersistedChatMessage[]): ChatMessage[] {
@@ -331,37 +311,42 @@ function toPersistedMessages(messages: ChatMessage[]): PersistedChatMessage[] {
     }));
 }
 
-function formatConversationUpdatedAt(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function getCachedMessagesFromLocal(local: LocalChatHistoryCache | null) {
+  if (!local) return null;
+  if (Array.isArray(local.messages)) return local.messages;
+  if (local.byConversation && typeof local.byConversation === "object") {
+    const activeId =
+      local.activeConversationId && local.byConversation[local.activeConversationId]
+        ? local.activeConversationId
+        : Object.keys(local.byConversation)[0];
+    if (activeId && Array.isArray(local.byConversation[activeId])) {
+      return local.byConversation[activeId];
+    }
+  }
+  return null;
 }
 
-function upsertConversationSummary(
-  conversations: ChatConversationSummary[],
-  update: {
-    id: string;
-    title: string;
-    updatedAt: string;
-    createdAt?: string;
-  },
-) {
-  const existing = conversations.find((item) => item.id === update.id);
-  const nextEntry: ChatConversationSummary = {
-    id: update.id,
-    title: update.title,
-    createdAt: existing?.createdAt || update.createdAt || update.updatedAt,
-    updatedAt: update.updatedAt,
-  };
-  return [nextEntry, ...conversations.filter((item) => item.id !== update.id)].slice(
-    0,
-    MAX_LOCAL_CONVERSATIONS,
+function isUnsupportedProviderMethodError(error: any) {
+  const raw = typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  return (
+    error?.code === 4200 ||
+    /requested method/.test(raw) ||
+    /does not support/.test(raw) ||
+    /method .* not supported/.test(raw) ||
+    /unsupported method/.test(raw)
   );
+}
+
+function normalizeTxHash(result: any): string {
+  if (typeof result === "string" && result.startsWith("0x")) return result;
+  if (typeof result?.hash === "string" && result.hash.startsWith("0x")) return result.hash;
+  if (
+    typeof result?.transactionHash === "string" &&
+    result.transactionHash.startsWith("0x")
+  ) {
+    return result.transactionHash;
+  }
+  throw new Error("Transaction was submitted but no transaction hash was returned.");
 }
 
 function parseTransferLocal(text: string): ParsedIntent | null {
@@ -1232,8 +1217,6 @@ const ClimateAgentPage = () => {
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechSupported, setSpeechSupported] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([buildWelcomeMessage()]);
-  const [conversations, setConversations] = useState<ChatConversationSummary[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -1276,72 +1259,9 @@ const ClimateAgentPage = () => {
   const historyStorageKey = normalizedAddress
     ? `${CHAT_HISTORY_STORAGE_PREFIX}:${normalizedAddress}`
     : null;
-
-  const createNewConversation = () => {
-    const now = new Date().toISOString();
-    const conversationId = createConversationId();
-    setActiveConversationId(conversationId);
-    setMessages([buildWelcomeMessage()]);
-    setSelectedStakeIds([]);
-    setStakeSelectionMessageId(null);
-    setConversations((prev) =>
-      upsertConversationSummary(prev, {
-        id: conversationId,
-        title: DEFAULT_CHAT_TITLE,
-        createdAt: now,
-        updatedAt: now,
-      }),
-    );
-  };
-
-  const openConversation = async (conversationId: string) => {
-    if (conversationId === activeConversationId) return;
-    setActiveConversationId(conversationId);
-    setSelectedStakeIds([]);
-    setStakeSelectionMessageId(null);
-
-    if (typeof window !== "undefined" && historyStorageKey) {
-      const local = safeParseJson<LocalChatHistoryCache>(
-        window.localStorage.getItem(historyStorageKey),
-      );
-      const cachedMessages = local?.byConversation?.[conversationId];
-      if (cachedMessages?.length) {
-        setMessages(normalizePersistedMessages(cachedMessages));
-      } else {
-        setMessages([buildWelcomeMessage()]);
-      }
-    }
-
-    if (!normalizedAddress) return;
-
-    try {
-      setHistoryLoading(true);
-      const response = await fetch(
-        `/api/agent/chat/history?address=${encodeURIComponent(normalizedAddress)}&conversationId=${encodeURIComponent(conversationId)}`,
-        { cache: "no-store" },
-      );
-      if (!response.ok) return;
-      const payload = (await response.json().catch(() => null)) as ChatHistoryPayload | null;
-      if (!payload) return;
-      setMessages(normalizePersistedMessages(payload.messages));
-      if (typeof window !== "undefined" && historyStorageKey) {
-        const local = safeParseJson<LocalChatHistoryCache>(
-          window.localStorage.getItem(historyStorageKey),
-        );
-        const nextLocal: LocalChatHistoryCache = {
-          conversations: payload.conversations,
-          activeConversationId: conversationId,
-          byConversation: {
-            ...(local?.byConversation || {}),
-            [conversationId]: payload.messages,
-          },
-        };
-        window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
-      }
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
+  const singleConversationId = normalizedAddress
+    ? getSingleConversationId(normalizedAddress)
+    : null;
 
   useEffect(() => {
     setHistoryReady(false);
@@ -1350,42 +1270,24 @@ const ClimateAgentPage = () => {
     setStakeSelectionMessageId(null);
 
     if (!normalizedAddress) {
-      setConversations([]);
-      setActiveConversationId(null);
       setMessages([buildWelcomeMessage()]);
       setHistoryReady(true);
       return;
     }
-
-    const now = new Date().toISOString();
-    const initialId = createConversationId();
-    const initialSummary: ChatConversationSummary = {
-      id: initialId,
-      title: DEFAULT_CHAT_TITLE,
-      createdAt: now,
-      updatedAt: now,
-    };
     let hasLocalSeed = false;
 
     if (typeof window !== "undefined" && historyStorageKey) {
       const local = safeParseJson<LocalChatHistoryCache>(
         window.localStorage.getItem(historyStorageKey),
       );
-      if (local && Array.isArray(local.conversations) && local.conversations.length > 0) {
+      const cachedMessages = getCachedMessagesFromLocal(local);
+      if (cachedMessages?.length) {
         hasLocalSeed = true;
-        const localActiveId =
-          local.activeConversationId && local.conversations.some((item) => item.id === local.activeConversationId)
-            ? local.activeConversationId
-            : local.conversations[0].id;
-        setConversations(local.conversations.slice(0, MAX_LOCAL_CONVERSATIONS));
-        setActiveConversationId(localActiveId);
-        setMessages(normalizePersistedMessages(local.byConversation?.[localActiveId] || []));
+        setMessages(normalizePersistedMessages(cachedMessages));
       }
     }
 
     if (!hasLocalSeed) {
-      setConversations([initialSummary]);
-      setActiveConversationId(initialId);
       setMessages([buildWelcomeMessage()]);
     }
 
@@ -1393,8 +1295,9 @@ const ClimateAgentPage = () => {
     const hydrateFromServer = async () => {
       try {
         setHistoryLoading(true);
+        if (!singleConversationId) return;
         const response = await fetch(
-          `/api/agent/chat/history?address=${encodeURIComponent(normalizedAddress)}`,
+          `/api/agent/chat/history?address=${encodeURIComponent(normalizedAddress)}&conversationId=${encodeURIComponent(singleConversationId)}`,
           { cache: "no-store" },
         );
         if (!response.ok) {
@@ -1405,37 +1308,11 @@ const ClimateAgentPage = () => {
         }
         const payload = (await response.json().catch(() => null)) as ChatHistoryPayload | null;
         if (!payload || cancelled) return;
-
-        if (!payload.conversations.length) {
-          if (!hasLocalSeed) {
-            setConversations([initialSummary]);
-            setActiveConversationId(initialId);
-            setMessages([buildWelcomeMessage()]);
-          }
-          return;
-        }
-
-        const nextActiveId =
-          payload.activeConversationId &&
-          payload.conversations.some((item) => item.id === payload.activeConversationId)
-            ? payload.activeConversationId
-            : payload.conversations[0].id;
-
-        setConversations(payload.conversations.slice(0, MAX_LOCAL_CONVERSATIONS));
-        setActiveConversationId(nextActiveId);
         setMessages(normalizePersistedMessages(payload.messages));
 
         if (typeof window !== "undefined" && historyStorageKey) {
-          const local = safeParseJson<LocalChatHistoryCache>(
-            window.localStorage.getItem(historyStorageKey),
-          );
           const nextLocal: LocalChatHistoryCache = {
-            conversations: payload.conversations.slice(0, MAX_LOCAL_CONVERSATIONS),
-            activeConversationId: nextActiveId,
-            byConversation: {
-              ...(local?.byConversation || {}),
-              [nextActiveId]: payload.messages,
-            },
+            messages: payload.messages,
           };
           window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
         }
@@ -1455,41 +1332,23 @@ const ClimateAgentPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [normalizedAddress, historyStorageKey]);
+  }, [normalizedAddress, historyStorageKey, singleConversationId]);
 
   useEffect(() => {
-    if (!historyStorageKey || !activeConversationId) return;
+    if (!historyStorageKey) return;
     if (!historyReady || typeof window === "undefined") return;
-    const existing = safeParseJson<LocalChatHistoryCache>(
-      window.localStorage.getItem(historyStorageKey),
-    );
     const persistedMessages = toPersistedMessages(messages);
     const nextLocal: LocalChatHistoryCache = {
-      conversations,
-      activeConversationId,
-      byConversation: {
-        ...(existing?.byConversation || {}),
-        [activeConversationId]: persistedMessages,
-      },
+      messages: persistedMessages,
     };
     window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
-  }, [historyStorageKey, conversations, activeConversationId, messages, historyReady]);
+  }, [historyStorageKey, messages, historyReady]);
 
   useEffect(() => {
-    if (!normalizedAddress || !activeConversationId) return;
+    if (!normalizedAddress || !singleConversationId) return;
     if (!historyReady) return;
 
     const persistedMessages = toPersistedMessages(messages);
-    const now = new Date().toISOString();
-    const title = deriveConversationTitle(persistedMessages);
-
-    setConversations((prev) =>
-      upsertConversationSummary(prev, {
-        id: activeConversationId,
-        title,
-        updatedAt: now,
-      }),
-    );
 
     if (saveHistoryTimerRef.current) {
       clearTimeout(saveHistoryTimerRef.current);
@@ -1500,8 +1359,7 @@ const ClimateAgentPage = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           address: normalizedAddress,
-          conversationId: activeConversationId,
-          title,
+          conversationId: singleConversationId,
           messages: persistedMessages,
         }),
       }).catch(() => {
@@ -1514,7 +1372,7 @@ const ClimateAgentPage = () => {
         clearTimeout(saveHistoryTimerRef.current);
       }
     };
-  }, [normalizedAddress, activeConversationId, messages, historyReady]);
+  }, [normalizedAddress, singleConversationId, messages, historyReady]);
 
   const renderMessageHtml = (content: string) => {
     const escaped = content
@@ -1553,6 +1411,14 @@ const ClimateAgentPage = () => {
       .replace(
         /\{\{ICON_BTG\}\}/g,
         '<img src="/assets/images/brand-logos/logo-btg.svg" alt="BTG" class="inline-block w-4 h-4 mr-2 align-text-bottom" />',
+      )
+      .replace(
+        /\{\{LINK_VIEW_STAKED\}\}/g,
+        `<a href="${EARN_STAKED_PLOTS_URL}" class="underline text-secondary font-medium">View Items Staked</a>`,
+      )
+      .replace(
+        /\{\{LINK_VIEW_UNSTAKED\}\}/g,
+        `<a href="${EARN_UNSTAKED_PLOTS_URL}" class="underline text-secondary font-medium">View Items Unstaked</a>`,
       )
       .replace(/&lt;strong&gt;([\s\S]*?)&lt;\/strong&gt;/g, "<strong>$1</strong>")
       .replace(/\n/g, "<br />");
@@ -1657,18 +1523,31 @@ const ClimateAgentPage = () => {
     }
 
     try {
-      const chainIdHex = (await walletClient.request({
-        method: "eth_chainId",
-        params: [],
-      })) as string;
+      let chainId: number | null = null;
+      try {
+        const chainIdHex = (await walletClient.request({
+          method: "eth_chainId",
+          params: [],
+        })) as string;
+        chainId = Number.parseInt(chainIdHex, 16);
+      } catch (error) {
+        // Some Farcaster/web providers do not expose chain RPC methods.
+        if (isUnsupportedProviderMethodError(error)) return true;
+        throw error;
+      }
 
-      const chainId = Number.parseInt(chainIdHex, 16);
       if (chainId === BASE_CHAIN_ID) return true;
 
-      await walletClient.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: "0x2105" }], // 8453
-      });
+      try {
+        await walletClient.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: "0x2105" }], // 8453
+        });
+      } catch (error) {
+        // Let sendTx try provider-specific write fallbacks if switching is unavailable.
+        if (isUnsupportedProviderMethodError(error)) return true;
+        throw error;
+      }
 
       const afterHex = (await walletClient.request({
         method: "eth_chainId",
@@ -1678,7 +1557,6 @@ const ClimateAgentPage = () => {
       return Number.parseInt(afterHex, 16) === BASE_CHAIN_ID;
     } catch {
       return false;
-      // If switching isn't supported, the swap may still fail—surface a better error later.
     }
   };
 
@@ -1695,41 +1573,73 @@ const ClimateAgentPage = () => {
       throw new Error("Wallet client not available.");
     }
 
+    const txParams = {
+      ...(address ? { from: address } : {}),
+      to: tx.to,
+      data: tx.data,
+      value: bigintToHex(tx.value),
+      ...(tx.gas && tx.gas > BigInt(0) ? { gas: bigintToHex(tx.gas) } : {}),
+      ...(tx.maxFeePerGas ? { maxFeePerGas: bigintToHex(tx.maxFeePerGas) } : {}),
+      ...(tx.maxPriorityFeePerGas
+        ? { maxPriorityFeePerGas: bigintToHex(tx.maxPriorityFeePerGas) }
+        : {}),
+      ...(typeof tx.nonce === "bigint" ? { nonce: bigintToHex(tx.nonce) } : {}),
+    };
+
     // If this is a Viem WalletClient (wagmi), prefer native sendTransaction with bigint params.
     if (typeof (walletClient as any).sendTransaction === "function" && (walletClient as any).account) {
-      return (await (walletClient as any).sendTransaction({
-        to: tx.to,
-        data: tx.data,
-        value: tx.value,
-        ...(tx.gas && tx.gas > BigInt(0) ? { gas: tx.gas } : {}),
-        ...(tx.maxFeePerGas ? { maxFeePerGas: tx.maxFeePerGas } : {}),
-        ...(tx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas } : {}),
-        ...(typeof tx.nonce === "bigint" ? { nonce: tx.nonce } : {}),
-      })) as string;
-    }
-
-    if (typeof (walletClient as any).request !== "function") {
-      throw new Error("Wallet provider does not support sending transactions.");
-    }
-
-    // EIP-1193 path (MetaMask/Privy/etc.) expects hex quantities.
-    return (await (walletClient as any).request({
-      method: "eth_sendTransaction",
-      params: [
-        {
-          from: address,
+      try {
+        const result = await (walletClient as any).sendTransaction({
           to: tx.to,
           data: tx.data,
-          value: bigintToHex(tx.value),
-          ...(tx.gas && tx.gas > BigInt(0) ? { gas: bigintToHex(tx.gas) } : {}),
-          ...(tx.maxFeePerGas ? { maxFeePerGas: bigintToHex(tx.maxFeePerGas) } : {}),
-          ...(tx.maxPriorityFeePerGas
-            ? { maxPriorityFeePerGas: bigintToHex(tx.maxPriorityFeePerGas) }
-            : {}),
-          ...(typeof tx.nonce === "bigint" ? { nonce: bigintToHex(tx.nonce) } : {}),
-        },
-      ],
-    })) as string;
+          value: tx.value,
+          ...(tx.gas && tx.gas > BigInt(0) ? { gas: tx.gas } : {}),
+          ...(tx.maxFeePerGas ? { maxFeePerGas: tx.maxFeePerGas } : {}),
+          ...(tx.maxPriorityFeePerGas ? { maxPriorityFeePerGas: tx.maxPriorityFeePerGas } : {}),
+          ...(typeof tx.nonce === "bigint" ? { nonce: tx.nonce } : {}),
+        });
+        return normalizeTxHash(result);
+      } catch (error) {
+        if (!isUnsupportedProviderMethodError(error)) {
+          throw error;
+        }
+      }
+    }
+
+    if (typeof (walletClient as any).request === "function") {
+      let lastError: any = null;
+      const methods = ["eth_sendTransaction", "wallet_sendTransaction"];
+      for (const method of methods) {
+        try {
+          const result = await (walletClient as any).request({
+            method,
+            params: [txParams],
+          });
+          return normalizeTxHash(result);
+        } catch (error) {
+          lastError = error;
+          if (!isUnsupportedProviderMethodError(error)) {
+            throw error;
+          }
+        }
+      }
+      if (lastError && !isUnsupportedProviderMethodError(lastError)) {
+        throw lastError;
+      }
+    }
+
+    // Some Farcaster web sessions expose only window.ethereum for writes.
+    if (typeof window !== "undefined" && (window as any).ethereum?.request) {
+      const result = await (window as any).ethereum.request({
+        method: "eth_sendTransaction",
+        params: [txParams],
+      });
+      return normalizeTxHash(result);
+    }
+
+    throw new Error(
+      "Your current wallet provider cannot send transactions in this context. Open the mini app in Warpcast mobile or reconnect an external wallet in web.",
+    );
   };
 
   const stopListening = (suppressSubmit = false) => {
@@ -1739,23 +1649,47 @@ const ClimateAgentPage = () => {
     }
   };
 
+  const handleClearConversation = () => {
+    if (isListening) {
+      stopListening(true);
+    }
+    if (saveHistoryTimerRef.current) {
+      clearTimeout(saveHistoryTimerRef.current);
+    }
+    const freshMessages = [buildWelcomeMessage()];
+    setInput("");
+    setLiveTranscript("");
+    setLastVoicePhrase("");
+    setSpeechError(null);
+    setSelectedStakeIds([]);
+    setStakeSelectionMessageId(null);
+    setMessages(freshMessages);
+
+    if (typeof window !== "undefined" && historyStorageKey) {
+      const nextLocal: LocalChatHistoryCache = {
+        messages: toPersistedMessages(freshMessages),
+      };
+      window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
+    }
+
+    if (normalizedAddress && singleConversationId) {
+      void fetch("/api/agent/chat/history", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: normalizedAddress,
+          conversationId: singleConversationId,
+          messages: toPersistedMessages(freshMessages),
+        }),
+      }).catch(() => {
+        // Keep local reset even when cloud sync fails.
+      });
+    }
+  };
+
   const submitMessage = async (rawInput: string, options?: { skipStop?: boolean }) => {
     const trimmed = rawInput.trim();
     if (!trimmed || isWorking) return;
-
-    if (!activeConversationId && normalizedAddress) {
-      const now = new Date().toISOString();
-      const conversationId = createConversationId();
-      setActiveConversationId(conversationId);
-      setConversations((prev) =>
-        upsertConversationSummary(prev, {
-          id: conversationId,
-          title: DEFAULT_CHAT_TITLE,
-          createdAt: now,
-          updatedAt: now,
-        }),
-      );
-    }
 
     const looksLikeQuestion =
       /\?\s*$/.test(trimmed) ||
@@ -2400,7 +2334,9 @@ const ClimateAgentPage = () => {
 
         setShowStakePendingToast(false);
         updateMessage(actionId, {
-          content: `Unstaked ${tokenIds.length} land plot(s) successfully.`,
+          content:
+            `Unstaked ${tokenIds.length} land plot(s) successfully.\n` +
+            `{{LINK_VIEW_UNSTAKED}}`,
           status: "success",
         });
         return;
@@ -2838,12 +2774,15 @@ const ClimateAgentPage = () => {
         /nonce too low|already known|known transaction/i.test(raw);
       const isReplacementUnderpriced =
         /replacement transaction underpriced/i.test(raw);
+      const isUnsupportedMethod = isUnsupportedProviderMethodError(error);
       const message = isDenied
         ? "Transaction signature was rejected in your wallet."
         : isNonceTooLow
           ? "Your wallet has a pending transaction with the same nonce. Please wait for it to confirm, speed it up in your wallet, or reset your account nonce, then try again."
           : isReplacementUnderpriced
             ? "There is already a pending transaction with this nonce. If you want to replace it, increase the gas fees by at least 10% in your wallet and resubmit."
+            : isUnsupportedMethod
+              ? "Your current Farcaster web wallet provider cannot sign this action. Open the mini app in Warpcast mobile, or reconnect an external wallet in web and try again."
             : raw;
 
       if (actionId) {
@@ -3057,14 +2996,18 @@ const ClimateAgentPage = () => {
     setShowStakePendingToast(false);
     if (actionId) {
       updateMessage(actionId, {
-        content: `Staked ${tokenIds.length} land plot(s) successfully.`,
+        content:
+          `Staked ${tokenIds.length} land plot(s) successfully.\n` +
+          `{{LINK_VIEW_STAKED}}`,
         status: "success",
         selectableNfts: false,
       });
     } else {
       addMessage({
         role: "assistant",
-        content: `Staked ${tokenIds.length} land plot(s) successfully.`,
+        content:
+          `Staked ${tokenIds.length} land plot(s) successfully.\n` +
+          `{{LINK_VIEW_STAKED}}`,
         status: "success",
       });
     }
@@ -3136,53 +3079,13 @@ const ClimateAgentPage = () => {
 
             <div className="box mt-6 flex flex-col">
               <div className="box-body flex flex-col gap-4">
-                <div className="rounded-lg border border-defaultborder/30 bg-camel10/40 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-defaulttextcolor">
-                      Discussions
-                    </div>
-                    <button
-                      type="button"
-                      onClick={createNewConversation}
-                      className="px-3 py-1.5 rounded-md bg-secondary text-white text-xs font-medium hover:bg-secondary/90 transition"
-                    >
-                      New chat
-                    </button>
+                {(historyLoading || historyError) && (
+                  <div className="text-[11px] text-defaulttextcolor/70">
+                    {historyLoading
+                      ? "Loading history..."
+                      : historyError || ""}
                   </div>
-                  <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                    {conversations.map((conversation) => (
-                      <button
-                        key={conversation.id}
-                        type="button"
-                        onClick={() => void openConversation(conversation.id)}
-                        className={`min-w-[180px] max-w-[220px] text-left rounded-md border px-3 py-2 transition ${
-                          conversation.id === activeConversationId
-                            ? "border-secondary bg-secondary/10"
-                            : "border-defaultborder/30 bg-white/70 dark:bg-bodybg hover:border-secondary/60"
-                        }`}
-                      >
-                        <div className="truncate text-xs font-semibold text-defaulttextcolor">
-                          {conversation.title || DEFAULT_CHAT_TITLE}
-                        </div>
-                        <div className="mt-1 text-[10px] text-defaulttextcolor/60">
-                          {formatConversationUpdatedAt(conversation.updatedAt)}
-                        </div>
-                      </button>
-                    ))}
-                    {!conversations.length && (
-                      <div className="text-xs text-defaulttextcolor/70 py-2">
-                        No history yet. Start with your first message.
-                      </div>
-                    )}
-                  </div>
-                  {(historyLoading || historyError) && (
-                    <div className="mt-2 text-[11px] text-defaulttextcolor/70">
-                      {historyLoading
-                        ? "Loading history..."
-                        : historyError || ""}
-                    </div>
-                  )}
-                </div>
+                )}
                 <div
                   className="flex flex-col gap-3 overflow-y-auto"
                   style={{ minHeight: "300px", maxHeight: "340px" }}
@@ -3356,6 +3259,14 @@ const ClimateAgentPage = () => {
                     >
                       {isWorking ? "Working..." : "Send"}
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleClearConversation}
+                      disabled={isWorking || historyLoading}
+                      className="px-3 py-2 rounded-md border border-defaultborder/30 bg-camel10 text-defaulttextcolor text-sm font-medium hover:bg-camel transition disabled:opacity-60"
+                    >
+                      Clear
+                    </button>
                   </div>
                 </form>
                 {(isListening || liveTranscript || lastVoicePhrase || speechError) && (
@@ -3415,3 +3326,4 @@ const ClimateAgentPage = () => {
 };
 
 export default ClimateAgentPage;
+

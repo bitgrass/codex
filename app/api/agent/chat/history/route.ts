@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 const MAX_CONVERSATIONS = 30;
 const MAX_MESSAGES = 80;
-const DEFAULT_CHAT_TITLE = "New chat";
+const DEFAULT_CHAT_TITLE = "";
 
 type ChatStatus = "pending" | "success" | "error";
 
@@ -114,13 +114,8 @@ function safeParseJson<T>(value: string | null): T | null {
   }
 }
 
-function deriveConversationTitle(messages: PersistedChatMessage[]) {
-  const firstUser = messages.find((message) => message.role === "user");
-  if (!firstUser) return DEFAULT_CHAT_TITLE;
-  const clean = firstUser.content.replace(/\s+/g, " ").trim();
-  if (!clean) return DEFAULT_CHAT_TITLE;
-  if (clean.length <= 48) return clean;
-  return `${clean.slice(0, 45)}...`;
+function deriveConversationTitle(_messages: PersistedChatMessage[]) {
+  return DEFAULT_CHAT_TITLE;
 }
 
 function normalizeMessages(messages: PersistedChatMessage[]) {
