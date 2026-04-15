@@ -73,6 +73,7 @@ const QUICK_PROMPTS = [
   "Buy Standard 100m2 plot",
 ];
 const CHAT_HISTORY_STORAGE_PREFIX = "climate-agent-history-v1";
+const CHAT_HISTORY_WARM_STORAGE_KEY = `${CHAT_HISTORY_STORAGE_PREFIX}:warm`;
 const MAX_LOCAL_MESSAGES = 80;
 const SINGLE_CHAT_CONVERSATION_ID = "single-thread";
 const DEFAULT_WELCOME_CONTENT =
@@ -80,6 +81,7 @@ const DEFAULT_WELCOME_CONTENT =
   "I can execute transactions, check your assets, explain platform features, and answer your climate-related questions.";
 const EARN_STAKED_PLOTS_URL = "/staking-nft?tab=staked-plot";
 const EARN_UNSTAKED_PLOTS_URL = "/staking-nft?tab=stake";
+let inMemoryWarmMessages: PersistedChatMessage[] | null = null;
 
 const ETH_TOKEN: Token = {
   name: "ETH",
@@ -324,6 +326,27 @@ function getCachedMessagesFromLocal(local: LocalChatHistoryCache | null) {
     }
   }
   return null;
+}
+
+function getWarmStartMessages() {
+  if (inMemoryWarmMessages?.length) {
+    return normalizePersistedMessages(inMemoryWarmMessages);
+  }
+  if (typeof window === "undefined") {
+    return [buildWelcomeMessage()];
+  }
+  const warm = safeParseJson<PersistedChatMessage[]>(
+    window.sessionStorage.getItem(CHAT_HISTORY_WARM_STORAGE_KEY),
+  );
+  if (Array.isArray(warm) && warm.length > 0) {
+    inMemoryWarmMessages = warm;
+    return normalizePersistedMessages(warm);
+  }
+  return [buildWelcomeMessage()];
+}
+
+function arePersistedMessagesEqual(left: PersistedChatMessage[], right: PersistedChatMessage[]) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isUnsupportedProviderMethodError(error: any) {
@@ -1216,7 +1239,7 @@ const ClimateAgentPage = () => {
   const [lastVoicePhrase, setLastVoicePhrase] = useState("");
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechSupported, setSpeechSupported] = useState(true);
-  const [messages, setMessages] = useState<ChatMessage[]>([buildWelcomeMessage()]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => getWarmStartMessages());
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -1264,13 +1287,24 @@ const ClimateAgentPage = () => {
     : null;
 
   useEffect(() => {
+    const persistedMessages = toPersistedMessages(messages);
+    inMemoryWarmMessages = persistedMessages;
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(
+        CHAT_HISTORY_WARM_STORAGE_KEY,
+        JSON.stringify(persistedMessages),
+      );
+    }
+  }, [messages]);
+
+  useEffect(() => {
     setHistoryReady(false);
     setHistoryError(null);
     setSelectedStakeIds([]);
     setStakeSelectionMessageId(null);
 
     if (!normalizedAddress) {
-      setMessages([buildWelcomeMessage()]);
+      setHistoryLoading(false);
       setHistoryReady(true);
       return;
     }
@@ -1287,14 +1321,14 @@ const ClimateAgentPage = () => {
       }
     }
 
-    if (!hasLocalSeed) {
-      setMessages([buildWelcomeMessage()]);
-    }
+    setHistoryReady(hasLocalSeed);
 
     let cancelled = false;
     const hydrateFromServer = async () => {
       try {
-        setHistoryLoading(true);
+        if (!hasLocalSeed) {
+          setHistoryLoading(true);
+        }
         if (!singleConversationId) return;
         const response = await fetch(
           `/api/agent/chat/history?address=${encodeURIComponent(normalizedAddress)}&conversationId=${encodeURIComponent(singleConversationId)}`,
@@ -1308,11 +1342,18 @@ const ClimateAgentPage = () => {
         }
         const payload = (await response.json().catch(() => null)) as ChatHistoryPayload | null;
         if (!payload || cancelled) return;
-        setMessages(normalizePersistedMessages(payload.messages));
+        const remoteMessages = payload.messages || [];
+        setMessages((previous) => {
+          const previousPersisted = toPersistedMessages(previous);
+          if (arePersistedMessagesEqual(previousPersisted, remoteMessages)) {
+            return previous;
+          }
+          return normalizePersistedMessages(remoteMessages);
+        });
 
         if (typeof window !== "undefined" && historyStorageKey) {
           const nextLocal: LocalChatHistoryCache = {
-            messages: payload.messages,
+            messages: remoteMessages,
           };
           window.localStorage.setItem(historyStorageKey, JSON.stringify(nextLocal));
         }
