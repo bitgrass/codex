@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { btgToken, nftInfo, EthInfo } from "@/shared/data/tokens/data";
+import { btgToken, EthInfo } from "@/shared/data/tokens/data";
 
 interface CryptoTableProps {
   address: string;
@@ -12,6 +12,7 @@ interface CryptoTableProps {
   loading?: boolean; // Add loading prop
   hasInitiallyLoaded?: boolean; // Add this to track if initial load is complete
   nftDataFromParent?: any[]; // NFT data from parent portfolio page
+  nftCountsLoading?: boolean;
 }
 
 const CryptoTable = ({
@@ -24,9 +25,8 @@ const CryptoTable = ({
   loading = false,
   hasInitiallyLoaded = false,
   nftDataFromParent = [],
+  nftCountsLoading = false,
 }: CryptoTableProps) => {
-  const [nftData, setNftData] = useState<any[]>([]);
-  const [nftLoading, setNftLoading] = useState<boolean>(false);
   const [btgPercentChange, setBtgPercentChange] = useState(0)
   const [ethPercentChange, setEthPercentChange] = useState(0)
   const [hasBoostPass, setHasBoostPass] = useState<boolean>(false);
@@ -139,50 +139,6 @@ const CryptoTable = ({
     fetchBoostPass();
   }, [address]);
 
-  // Fetch all NFTs with cursor-based pagination
-  useEffect(() => {
-    if (!address) return;
-    const fetchAllNfts = async () => {
-      setNftLoading(true);
-      let allNfts: any[] = [];
-      let cursor: string | null = null;
-      try {
-        do {
-          const params = new URLSearchParams({
-            chain: "base",
-            format: "decimal",
-            "token_addresses[0]": nftInfo.address,
-            normalizeMetadata: "true",
-            media_items: "false",
-            include_prices: "false",
-            limit: "100",
-          });
-          if (cursor) params.append("cursor", cursor);
-
-          const response = await axios.get(
-            `https://deep-index.moralis.io/api/v2.2/${address}/nft?${params.toString()}`,
-            {
-              headers: {
-                accept: "application/json",
-                "X-API-Key": process.env.NEXT_PUBLIC_MORALIS_APY_KEY!,
-              },
-            }
-          );
-
-          allNfts = [...allNfts, ...(response.data.result || [])];
-          cursor = response.data.cursor || null;
-        } while (cursor);
-      } catch (err) {
-        console.error("Error fetching NFTs", err);
-      } finally {
-        setNftData(allNfts);
-        setNftLoading(false);
-      }
-    };
-
-    fetchAllNfts();
-  }, [address]);
-
   // Helper to count tiers
   const getTierCounts = (nfts: any[]) => {
     let legendary = 0, premium = 0, standard = 0;
@@ -195,8 +151,8 @@ const CryptoTable = ({
     return { legendary, premium, standard };
   };
 
-  // Use nftDataFromParent if available (includes staked NFTs), otherwise use local nftData
-  const { legendary, premium, standard } = getTierCounts(nftDataFromParent.length > 0 ? nftDataFromParent : nftData);
+  const { legendary, premium, standard } = getTierCounts(nftDataFromParent);
+  const showNftCountsLoading = nftCountsLoading && nftDataFromParent.length === 0;
 
   const formatLargeValue = (value: number) => {
     // Handle invalid values
@@ -261,7 +217,7 @@ const CryptoTable = ({
                 <img src="../../../assets/images/brand-logos/Standard.svg" alt="" />
               </span>
               <div className="ml-1 flex flex-col gap-1 min-w-0">
-                <div className="font-bold text-xl">{nftLoading ? "..." : standard}</div>
+                <div className="font-bold text-xl">{showNftCountsLoading ? "..." : standard}</div>
                 <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Standard Landplots</div>
               </div>
             </div>
@@ -271,7 +227,7 @@ const CryptoTable = ({
                 <img src="../../../assets/images/brand-logos/Premium.svg" alt="" />
               </span>
               <div className="ml-1 flex flex-col gap-1 min-w-0">
-                <div className="font-bold text-xl">{nftLoading ? "..." : premium}</div>
+                <div className="font-bold text-xl">{showNftCountsLoading ? "..." : premium}</div>
                 <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Premium Landplots</div>
               </div>
             </div>
@@ -281,7 +237,7 @@ const CryptoTable = ({
                 <img src="../../../assets/images/brand-logos/Legendary.svg" alt="" />
               </span>
               <div className="ml-1 flex flex-col gap-1 min-w-0">
-                <div className="font-bold text-xl">{nftLoading ? "..." : legendary}</div>
+                <div className="font-bold text-xl">{showNftCountsLoading ? "..." : legendary}</div>
                 <div className="text-xs text-[#8c9097] dark:text-white/50 truncate">Legendary Landplots</div>
               </div>
             </div>

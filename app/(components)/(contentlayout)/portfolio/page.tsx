@@ -87,10 +87,8 @@ const Crypto = () => {
   const [totalBalance, setTotalBalance] = useState("0.00");
   const [ethSupplyLoaded, setEthSupplyLoaded] = useState(false);
 
-  // ✅ CRITICAL: Use Map for instant deduplication during fetch
-  const [cryptoTxMap, setCryptoTxMap] = useState<Map<string, any>>(new Map());
-  const [nftTxMap, setNftTxMap] = useState<Map<string, any>>(new Map());
-  const [ethTxMap, setEthTxMap] = useState<Map<string, any>>(new Map());
+  // ✅ Single aggregated map to avoid expensive final concatenation of multiple maps.
+  const [allTxMap, setAllTxMap] = useState<Map<string, any>>(new Map());
 
   const [transactionCursor, setTransactionCursor] = useState(null);
   const [nftTransactionCursor, setNftTransactionCursor] = useState(null);
@@ -101,6 +99,10 @@ const Crypto = () => {
   // ✅ Cache for API responses (5 minute TTL)
   const apiCache = useRef<Map<string, { data: any; timestamp: number }>>(new Map());
   const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  const API_TIMEOUT_MS = 15000;
+  const MAX_CACHE_ENTRIES = 120;
+  const INITIAL_TX_FETCH_LIMIT = 40;
+  const INITIAL_NFT_FETCH_LIMIT = 80;
 
   const getCachedOrFetch = useCallback(async (url: string, headers: any) => {
     const now = Date.now();
@@ -112,17 +114,38 @@ const Crypto = () => {
     }
     
     console.log('🌐 API call:', url.slice(0, 80));
-    const response = await axios.get(url, { headers });
+    const response = await axios.get(url, { headers, timeout: API_TIMEOUT_MS });
     apiCache.current.set(url, { data: response.data, timestamp: now });
     
-    // Clean old cache entries (keep last 50)
-    if (apiCache.current.size > 50) {
+    // Clean old cache entries and keep only the latest entries.
+    if (apiCache.current.size > MAX_CACHE_ENTRIES) {
       const entries = Array.from(apiCache.current.entries());
       entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
-      apiCache.current = new Map(entries.slice(0, 50));
+      apiCache.current = new Map(entries.slice(0, MAX_CACHE_ENTRIES));
     }
     
     return response.data;
+  }, [API_TIMEOUT_MS, MAX_CACHE_ENTRIES, CACHE_TTL]);
+
+  const upsertTransactions = useCallback((items: any[]) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    setAllTxMap((prevMap) => {
+      const nextMap = new Map(prevMap);
+      let changed = false;
+
+      for (const tx of items) {
+        const key =
+          tx?._key ||
+          `${tx?.type || "tx"}::${tx?.transactionHash || "na"}::${tx?.timestamp || Date.now()}`;
+        if (!nextMap.has(key)) {
+          nextMap.set(key, { ...tx, _key: key });
+          changed = true;
+        }
+      }
+
+      return changed ? nextMap : prevMap;
+    });
   }, []);
   const [nftCursor, setNftCursor] = useState(null);
   const [activeTab, setActiveTab] = useState("crypto-tab-pane");
@@ -139,18 +162,19 @@ const Crypto = () => {
 
   // Fetch staked NFTs from all pools and create NFT objects
   const fetchStakedNFTs = useCallback(async (userAddress: string) => {
-    if (!userAddress) return { stakedIds: new Set<string>(), stakedNFTObjects: [] };
+  if (!userAddress) return { stakedIds: new Set<string>(), stakedNFTObjects: [] };
 
-    const stakedTokenIds = new Set<string>();
-    const stakedNFTObjects: any[] = [];
-    const pools = [
-      { address: LEGENDARY_POOL_ADDRESS, name: 'Legendary' },
-      { address: PREMIUM_POOL_ADDRESS, name: 'Premium' },
-      { address: STANDARD_POOL_ADDRESS, name: 'Standard' }
-    ];
+  const stakedTokenIds = new Set<string>();
+  const stakedNFTObjects: any[] = [];
+  const pools = [
+    { address: LEGENDARY_POOL_ADDRESS, name: "Legendary" },
+    { address: PREMIUM_POOL_ADDRESS, name: "Premium" },
+    { address: STANDARD_POOL_ADDRESS, name: "Standard" },
+  ];
 
-    try {
-      for (const pool of pools) {
+  try {
+    const poolStakeInfo = await Promise.all(
+      pools.map(async (pool) => {
         const contract = getContract({
           client,
           chain: baseChain,
@@ -160,73 +184,59 @@ const Crypto = () => {
         const stakeInfo = await readContract({
           contract,
           method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
-          params: [userAddress]
+          params: [userAddress],
         });
 
-        const tokenIds = stakeInfo[0] as bigint[];
-        
-        // Fetch individual stake timestamps for each token
-        for (let i = 0; i < tokenIds.length; i++) {
-          const id = tokenIds[i];
-          const tokenIdStr = id.toString();
-          stakedTokenIds.add(tokenIdStr);
-          
-          // Get staking timestamp for this specific token
-          let stakingTimestamp = Date.now() / 1000;
-          try {
-            const stakeData = await readContract({
-              contract,
-              method: "function userStakes(address, uint256) view returns (uint256)",
-              params: [userAddress, BigInt(i)]
-            });
-            stakingTimestamp = Number(stakeData);
-          } catch (error) {
-            console.log(`Using current time for token ${tokenIdStr} stake timestamp`);
-          }
-          
-          // Create NFT object for staked NFT
-          const tokenIdNum = Number(tokenIdStr);
-          let image = "/assets/images/apps/100m2v1.jpg";
-          let nftType = "Plot 100 m²";
-          
-          if (tokenIdNum >= 1 && tokenIdNum <= 400) {
-            image = "/assets/images/apps/1000m2v1.jpg";
-            nftType = "Plot 1000 m²";
-          } else if (tokenIdNum >= 401 && tokenIdNum <= 1200) {
-            image = "/assets/images/apps/500m2v1.jpg";
-            nftType = "Plot 500 m²";
-          }
-          
-          const formattedDate = new Date(stakingTimestamp * 1000).toLocaleString();
-          console.log(`Token ${tokenIdStr} staked at timestamp: ${stakingTimestamp}, formatted: ${formattedDate}`);
-          
-          stakedNFTObjects.push({
-            contract_address: "0x95273ead1dc63b4d809018f10c3e659c5fb0b8a5",
-            name: nftType,
-            slug: null,
-            description: null,
-            image: image,
-            floor_price: null,
-            symbol: "PLOT",
-            tokenId: tokenIdStr,
-            collectionName: "Devtest",
-            timestamp: stakingTimestamp,
-            date: formattedDate,
-            isStaked: true,
-            stakedAt: stakingTimestamp
-          });
+        return {
+          tokenIds: (stakeInfo[0] || []) as bigint[],
+        };
+      }),
+    );
+
+    const timestampNow = Math.floor(Date.now() / 1000);
+    const formattedNow = new Date(timestampNow * 1000).toLocaleString();
+
+    for (const { tokenIds } of poolStakeInfo) {
+      for (const id of tokenIds) {
+        const tokenIdStr = id.toString();
+        stakedTokenIds.add(tokenIdStr);
+
+        const tokenIdNum = Number(tokenIdStr);
+        let image = "/assets/images/apps/100m2v1.jpg";
+        let nftType = "Plot 100 m2";
+
+        if (tokenIdNum >= 1 && tokenIdNum <= 400) {
+          image = "/assets/images/apps/1000m2v1.jpg";
+          nftType = "Plot 1000 m2";
+        } else if (tokenIdNum >= 401 && tokenIdNum <= 1200) {
+          image = "/assets/images/apps/500m2v1.jpg";
+          nftType = "Plot 500 m2";
         }
 
-        console.log(`[${pool.name} Pool] Staked NFTs:`, tokenIds.length);
+        stakedNFTObjects.push({
+          contract_address: "0x95273ead1dc63b4d809018f10c3e659c5fb0b8a5",
+          name: nftType,
+          slug: null,
+          description: null,
+          image,
+          floor_price: null,
+          symbol: "PLOT",
+          tokenId: tokenIdStr,
+          collectionName: "Devtest",
+          timestamp: timestampNow,
+          date: formattedNow,
+          isStaked: true,
+          stakedAt: timestampNow,
+        });
       }
-
-      console.log('Total staked NFTs:', stakedTokenIds.size);
-      return { stakedIds: stakedTokenIds, stakedNFTObjects };
-    } catch (error) {
-      console.error('Error fetching staked NFTs:', error);
-      return { stakedIds: stakedTokenIds, stakedNFTObjects };
     }
-  }, []);
+
+    return { stakedIds: stakedTokenIds, stakedNFTObjects };
+  } catch (error) {
+    console.error("Error fetching staked NFTs:", error);
+    return { stakedIds: stakedTokenIds, stakedNFTObjects };
+  }
+}, []);
 
 
   // Fetch ETH Data
@@ -374,7 +384,8 @@ const Crypto = () => {
       });
       const response = { data };
 
-      const fetchedCryptoTxs = response.data.result.map((tx: any) => {
+      const swapRows = response.data?.result || [];
+      const fetchedCryptoTxs = swapRows.map((tx: any) => {
         const baseToken = tx.bought;
         const quoteToken = tx.sold;
         const uniqueKey = `crypto::${tx.transactionHash}::${parseFloat(quoteToken.amount).toFixed(6)} ${quoteToken.symbol}`;
@@ -395,17 +406,7 @@ const Crypto = () => {
 
       console.log('💰 Fetched crypto txs:', fetchedCryptoTxs.length);
 
-      // ✅ Use Map for instant deduplication
-      setCryptoTxMap((prevMap) => {
-        const newMap = new Map(prevMap);
-        fetchedCryptoTxs.forEach((tx: any) => {
-          if (!newMap.has(tx._key)) {
-            newMap.set(tx._key, tx);
-          }
-        });
-        console.log('💰 Crypto Map size:', newMap.size);
-        return newMap;
-      });
+      upsertTransactions(fetchedCryptoTxs);
 
       setTransactionCursor(response.data.cursor || null);
     } catch (error) {
@@ -413,7 +414,7 @@ const Crypto = () => {
     } finally {
       setLoadingTx(false);
     }
-  }, [address, getCachedOrFetch]);
+  }, [address, getCachedOrFetch, upsertTransactions]);
 
   // ✅ CRITICAL FIX: Fetch NFT with Map-based deduplication
   const fetchNftTransactions = useCallback(async (cursor = null, limit = 10) => {
@@ -445,25 +446,10 @@ const Crypto = () => {
       });
       const response = { data };
 
-      const transactionsWithValue = await Promise.all(
-        response.data.result
-          .filter((tx: any) => tx.token_address.toLowerCase() === nftInfo.address.toLowerCase())
-          .map(async (tx: any) => {
-            try {
-              const txResponse = await axios.get(
-                `https://deep-index.moralis.io/api/v2.2/transaction/${tx.transaction_hash}?chain=base`,
-                {
-                  headers: { accept: "application/json", "X-API-Key": API_KEY },
-                }
-              );
-              return { ...tx, transaction_value: txResponse.data.value };
-            } catch (error) {
-              return { ...tx, transaction_value: "0" };
-            }
-          })
-      );
+      const transferRows = (response.data?.result || [])
+        .filter((tx: any) => tx.token_address?.toLowerCase?.() === nftInfo.address.toLowerCase());
 
-      const fetchedNftTxs = transactionsWithValue.map((tx: any) => {
+      const fetchedNftTxs = transferRows.map((tx: any) => {
         const tokenId = parseInt(tx.token_id);
         let NftType = "Plot 100 m²";
         let transactionType = "NFT Transfer";
@@ -490,7 +476,7 @@ const Crypto = () => {
           transactionType = "Land Plot Unstake";
         } else if (tx.from_address === "0x0000000000000000000000000000000000000000") {
           transactionType = "Land Plot Purchase";
-        } else if (tx.transaction_value && tx.transaction_value !== "0") {
+        } else if (String(tx.value || "0") !== "0") {
           transactionType = "Land Plot Purchase";
         }
 
@@ -517,17 +503,7 @@ const Crypto = () => {
 
       console.log('🎨 Fetched NFT txs:', fetchedNftTxs.length);
 
-      // ✅ Use Map for instant deduplication
-      setNftTxMap((prevMap) => {
-        const newMap = new Map(prevMap);
-        fetchedNftTxs.forEach((tx: any) => {
-          if (!newMap.has(tx._key)) {
-            newMap.set(tx._key, tx);
-          }
-        });
-        console.log('🎨 NFT Map size:', newMap.size);
-        return newMap;
-      });
+      upsertTransactions(fetchedNftTxs);
 
       setNftTransactionCursor(response.data.cursor || null);
     } catch (error) {
@@ -535,7 +511,7 @@ const Crypto = () => {
     } finally {
       setLoadingNFTs(false);
     }
-  }, [address, getCachedOrFetch]);
+  }, [address, getCachedOrFetch, upsertTransactions]);
 
   // ✅ Fetch native ETH transactions
   const fetchEthTransactions = useCallback(async (cursor = null, limit = 10) => {
@@ -559,7 +535,7 @@ const Crypto = () => {
       });
       const response = { data };
 
-      const fetchedEthTxs = response.data.result
+      const fetchedEthTxs = (response.data?.result || [])
         .filter((tx: any) => {
           // Only include transactions with ETH value (not token transfers)
           const value = parseFloat(tx.value || "0");
@@ -594,26 +570,15 @@ const Crypto = () => {
 
       console.log('💎 Fetched ETH txs:', fetchedEthTxs.length);
 
-      // ✅ Use Map for instant deduplication
-      setEthTxMap((prevMap) => {
-        const newMap = new Map(prevMap);
-        fetchedEthTxs.forEach((tx: any) => {
-          if (!newMap.has(tx._key)) {
-            newMap.set(tx._key, tx);
-          }
-        });
-        console.log('💎 ETH Map size:', newMap.size);
-        return newMap;
-      });
+      upsertTransactions(fetchedEthTxs);
 
       setEthTransactionCursor(response.data.cursor || null);
     } catch (error) {
       console.error("Error fetching ETH transactions:", error);
     }
-  }, [address, getCachedOrFetch]);
+  }, [address, getCachedOrFetch, upsertTransactions]);
 
   // Fetch SCAN token (BCO2) transfers
-  const [scanTxMap, setScanTxMap] = useState<Map<string, any>>(new Map());
   const [scanTransactionCursor, setScanTransactionCursor] = useState(null);
 
   const fetchScanTransactions = useCallback(async (cursor = null, limit = 10) => {
@@ -642,7 +607,7 @@ const Crypto = () => {
       });
       const response = { data };
 
-      const fetchedScanTxs = response.data.result
+      const fetchedScanTxs = (response.data?.result || [])
         .filter((tx: any) => {
           // Only show transfers FROM staking pools TO user (rewards)
           const fromAddress = tx.from_address?.toLowerCase();
@@ -670,22 +635,13 @@ const Crypto = () => {
 
       console.log('🌱 Fetched SCAN txs:', fetchedScanTxs.length);
 
-      setScanTxMap((prevMap) => {
-        const newMap = new Map(prevMap);
-        fetchedScanTxs.forEach((tx: any) => {
-          if (!newMap.has(tx._key)) {
-            newMap.set(tx._key, tx);
-          }
-        });
-        console.log('🌱 SCAN Map size:', newMap.size);
-        return newMap;
-      });
+      upsertTransactions(fetchedScanTxs);
 
       setScanTransactionCursor(response.data.cursor || null);
     } catch (error) {
       console.error("Error fetching SCAN transactions:", error);
     }
-  }, [address, getCachedOrFetch]);
+  }, [address, getCachedOrFetch, upsertTransactions]);
 
   // Fetch NFTs
   const fetchNfts = useCallback(async (cursor = null, limit = 4) => {
@@ -735,7 +691,7 @@ const Crypto = () => {
         const transferResponse = { data: transferData };
 
         // Build a map of tokenId -> most recent transfer to this address
-        transferResponse.data.result.forEach((transfer: any) => {
+        (transferResponse.data?.result || []).forEach((transfer: any) => {
           if (transfer.to_address?.toLowerCase() === address.toLowerCase()) {
             const tokenId = parseInt(transfer.token_id);
             if (!transfersMap.has(tokenId)) {
@@ -750,7 +706,7 @@ const Crypto = () => {
       }
 
       // Map NFTs with timestamps from batch data
-      const nftsWithTimestamps = response.data.result.map((nft: any) => {
+      const nftsWithTimestamps = (response.data?.result || []).map((nft: any) => {
         const tokenId = parseInt(nft.token_id);
         let actualTimestamp = tokenId * 1000000; // Fallback
         let purchaseDate = new Date(nft.last_token_uri_sync || nft.last_metadata_sync).toLocaleString();
@@ -796,22 +752,10 @@ const Crypto = () => {
   }, [address, getCachedOrFetch]);
 
   const allTransactions = useMemo(() => {
-    const cryptoArray = Array.from(cryptoTxMap.values());
-    const nftArray = Array.from(nftTxMap.values());
-    const ethArray = Array.from(ethTxMap.values());
-    const scanArray = Array.from(scanTxMap.values());
-    const merged = [...cryptoArray, ...nftArray, ...ethArray, ...scanArray];
-
-    // Add unique index for stable keys
-    const withUniqueKeys = merged.map((tx, idx) => ({
-      ...tx,
-      _uniqueIndex: idx,
-      _key: tx._key || `${tx.type}-${tx.timestamp}-${idx}`
-    }));
-
-    const sorted = withUniqueKeys.sort((a, b) => b.timestamp - a.timestamp);
-    return sorted;
-  }, [cryptoTxMap, nftTxMap, ethTxMap, scanTxMap]);
+    const merged = Array.from(allTxMap.values());
+    merged.sort((a, b) => b.timestamp - a.timestamp);
+    return merged;
+  }, [allTxMap]);
 
   // ✅ CRITICAL FIX: Stable pagination with proper bounds checking
   const transactionPagination = useMemo(() => {
@@ -930,7 +874,7 @@ const Crypto = () => {
         return;
       }
 
-      if (isInitialMount.current && cryptoTxMap.size > 0) {
+      if (isInitialMount.current && allTxMap.size > 0) {
         console.log("🔄 Initial mount with existing data");
         prevAddressRef.current = address;
         isInitialMount.current = false;
@@ -945,9 +889,7 @@ const Crypto = () => {
 
         // Reset everything on new address
         if (isNewAddress) {
-          setCryptoTxMap(new Map());
-          setNftTxMap(new Map());
-          setEthTxMap(new Map());
+          setAllTxMap(new Map());
           setNftData([]);
           setCurrentTransactionPage(1);
           setCurrentNftPage(1);
@@ -969,24 +911,24 @@ const Crypto = () => {
         setLoadingNftGrid(true);
 
         // Start all fetches immediately (non-blocking)
-        const cryptoPromise = fetchCryptoTransactions(null, 100).then(() => {
+        const cryptoPromise = fetchCryptoTransactions(null, INITIAL_TX_FETCH_LIMIT).then(() => {
           setHasInitialTransaction(true);
           console.log('✅ Crypto transactions loaded');
         });
 
-        const nftTxPromise = fetchNftTransactions(null, 100).then(() => {
+        const nftTxPromise = fetchNftTransactions(null, INITIAL_TX_FETCH_LIMIT).then(() => {
           console.log('✅ NFT transactions loaded');
         });
 
-        const ethTxPromise = fetchEthTransactions(null, 100).then(() => {
+        const ethTxPromise = fetchEthTransactions(null, INITIAL_TX_FETCH_LIMIT).then(() => {
           console.log('✅ ETH transactions loaded');
         });
 
-        const scanTxPromise = fetchScanTransactions(null, 100).then(() => {
+        const scanTxPromise = fetchScanTransactions(null, INITIAL_TX_FETCH_LIMIT).then(() => {
           console.log('✅ SCAN transactions loaded');
         });
 
-        const nftGridPromise = fetchNfts(null, 100).then(async () => {
+        const nftGridPromise = fetchNfts(null, INITIAL_NFT_FETCH_LIMIT).then(async () => {
           setHasInitialNftLoad(true);
           console.log('✅ NFT grid loaded');
           // Fetch staked NFTs after owned NFTs are loaded
@@ -1014,10 +956,7 @@ const Crypto = () => {
         isInitialMount.current = true;
         initialFetchComplete.current = false;
 
-        setCryptoTxMap(new Map());
-        setNftTxMap(new Map());
-        setEthTxMap(new Map());
-        setScanTxMap(new Map());
+        setAllTxMap(new Map());
         setNftData([]);
         setTransactionCursor(null);
         setScanTransactionCursor(null);
@@ -1031,7 +970,7 @@ const Crypto = () => {
         setLoadingNftGrid(false);
       }
     }
-  }, [address, addressLoading, authenticated, ready, fetchCryptoTransactions, fetchNftTransactions, fetchEthTransactions, fetchNfts, cryptoTxMap.size]);
+  }, [address, addressLoading, authenticated, ready, fetchCryptoTransactions, fetchNftTransactions, fetchEthTransactions, fetchScanTransactions, fetchNfts, fetchStakedNFTs, allTxMap.size, INITIAL_TX_FETCH_LIMIT, INITIAL_NFT_FETCH_LIMIT]);
 
   // Status effect
   useEffect(() => {
@@ -1146,3 +1085,4 @@ const Crypto = () => {
 };
 
 export default Crypto;
+

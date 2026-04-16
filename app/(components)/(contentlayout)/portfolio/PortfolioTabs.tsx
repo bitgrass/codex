@@ -140,22 +140,18 @@ const PortfolioTabs = ({
                   role="tabpanel"
                   aria-labelledby="crypto-tab"
                 >
-                  {(loadingNftGrid || !ethSupplyLoaded) ? (
-                    <div className="flex flex-col items-center justify-center py-6">
-                      <div className="spinner"></div>
-                      <p className="mt-3 text-sm">Loading data, please wait...</p>
-                    </div>
-                  ) : (
-                    <CryptoTable
-                      address={address}
-                      ethBalance={ethBalance}
-                      ethPrice={ethPrice}
-                      btgBalance={btgBalance}
-                      btgPrice={btgPrice}
-                      ethSupply={ethSupply}
-                      nftDataFromParent={allNftData}
-                    />
-                  )}
+                  <CryptoTable
+                    address={address}
+                    ethBalance={ethBalance}
+                    ethPrice={ethPrice}
+                    btgBalance={btgBalance}
+                    btgPrice={btgPrice}
+                    ethSupply={ethSupply}
+                    loading={Boolean(loadingNftGrid)}
+                    hasInitiallyLoaded={hasInitialNftLoad}
+                    nftCountsLoading={Boolean(loadingNftGrid && !hasInitialNftLoad)}
+                    nftDataFromParent={allNftData}
+                  />
                 </div>
 
                 {/* ---------- NFTs ---------- */}

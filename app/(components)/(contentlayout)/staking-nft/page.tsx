@@ -1,6 +1,6 @@
 "use client"
 import Seo from '@/shared/layout-components/seo/seo'
-import React, { Fragment, useState, useEffect } from 'react'
+import React, { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createThirdwebClient, getContract, defineChain, prepareContractCall, sendTransaction, readContract } from "thirdweb"
 import { isApprovedForAll, setApprovalForAll, balanceOf } from "thirdweb/extensions/erc721"
@@ -47,7 +47,54 @@ const getPoolForTokenId = (tokenId: number): { address: string; name: string } =
     return { address: STANDARD_POOL_ADDRESS, name: 'Unknown' }
 }
 
+const getPoolAddressByName = (poolName: string) => {
+    const normalized = String(poolName || "").toLowerCase()
+    if (normalized === "legendary") return LEGENDARY_POOL_ADDRESS
+    if (normalized === "premium") return PREMIUM_POOL_ADDRESS
+    if (normalized === "standard") return STANDARD_POOL_ADDRESS
+    return null
+}
+
 const BASE_CHAIN_ID = 8453
+const STAKING_UI_CACHE_PREFIX = "staking-nft-ui-v1"
+const LIVE_EARNINGS_REFRESH_MS = 15000
+const POST_ACTION_SYNC_DELAY_MS = 8000
+
+function getStakingUiCacheKey(address: string) {
+    return `${STAKING_UI_CACHE_PREFIX}:${address.toLowerCase()}`
+}
+
+function serializeOwnedNftsForCache(items: any[]) {
+    return items.map((item) => ({
+        ...item,
+        id: item.id?.toString?.() || String(item.id),
+    }))
+}
+
+function deserializeOwnedNftsFromCache(items: any[]) {
+    return items
+        .filter((item) => item && item.id)
+        .map((item) => ({
+            ...item,
+            id: BigInt(item.id),
+        }))
+}
+
+function serializeStakedNftsForCache(items: any[]) {
+    return items.map((item) => ({
+        ...item,
+        tokenId: item.tokenId?.toString?.() || String(item.tokenId),
+    }))
+}
+
+function deserializeStakedNftsFromCache(items: any[]) {
+    return items
+        .filter((item) => item && item.tokenId)
+        .map((item) => ({
+            ...item,
+            tokenId: BigInt(item.tokenId),
+        }))
+}
 
 const StakingNFT = () => {
     const { address, client: walletClient, clientReady } = useConnectedAddress()
@@ -79,6 +126,41 @@ const StakingNFT = () => {
     const [legendaryStats, setLegendaryStats] = useState({ staked: 0, totalStaked: 0, earnings: "0" })
     const [premiumStats, setPremiumStats] = useState({ staked: 0, totalStaked: 0, earnings: "0" })
     const [standardStats, setStandardStats] = useState({ staked: 0, totalStaked: 0, earnings: "0" })
+    const actionSyncUntilRef = useRef(0)
+    const actionSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    useEffect(() => {
+        return () => {
+            if (actionSyncTimerRef.current) {
+                clearTimeout(actionSyncTimerRef.current)
+            }
+        }
+    }, [])
+
+    useEffect(() => {
+        if (!address || typeof window === "undefined") return
+        const uiCacheKey = getStakingUiCacheKey(address)
+        window.localStorage.setItem(
+            uiCacheKey,
+            JSON.stringify({
+                ownedNFTs: serializeOwnedNftsForCache(ownedNFTs),
+                stakedNFTs: serializeStakedNftsForCache(stakedNFTs),
+                stakedCounts: {
+                    legendary: legendaryStats.staked,
+                    premium: premiumStats.staked,
+                    standard: standardStats.staked,
+                },
+                updatedAt: Date.now(),
+            }),
+        )
+    }, [
+        address,
+        ownedNFTs,
+        stakedNFTs,
+        legendaryStats.staked,
+        premiumStats.staked,
+        standardStats.staked,
+    ])
 
     useEffect(() => {
         const tab = (searchParams.get("tab") || "").toLowerCase()
@@ -91,36 +173,30 @@ const StakingNFT = () => {
         }
     }, [searchParams])
 
-    // Get contracts for all pools
-    const legendaryPoolContract = getContract({
+    // Keep contract instances stable to avoid render-loop RPC calls.
+    const legendaryPoolContract = useMemo(() => getContract({
         client,
         chain: baseChain,
         address: LEGENDARY_POOL_ADDRESS,
-    })
+    }), [])
 
-    const premiumPoolContract = getContract({
+    const premiumPoolContract = useMemo(() => getContract({
         client,
         chain: baseChain,
         address: PREMIUM_POOL_ADDRESS,
-    })
+    }), [])
 
-    const standardPoolContract = getContract({
+    const standardPoolContract = useMemo(() => getContract({
         client,
         chain: baseChain,
         address: STANDARD_POOL_ADDRESS,
-    })
+    }), [])
 
-    const nftContract = getContract({
+    const nftContract = useMemo(() => getContract({
         client,
         chain: baseChain,
         address: NFT_COLLECTION_ADDRESS,
-    })
-
-    const rewardTokenContract = getContract({
-        client,
-        chain: baseChain,
-        address: REWARD_TOKEN_ADDRESS,
-    })
+    }), [])
 
     // Helper to get contract for a specific pool
     const getContractForPool = (poolAddress: string) => {
@@ -214,8 +290,44 @@ const StakingNFT = () => {
                 setLoadingNFTs(false)
                 return
             }
+            const uiCacheKey = getStakingUiCacheKey(address)
+            let seededFromCache = false
+            if (typeof window !== "undefined") {
+                try {
+                    const cachedRaw = window.localStorage.getItem(uiCacheKey)
+                    if (cachedRaw) {
+                        const cached = JSON.parse(cachedRaw) as {
+                            ownedNFTs?: any[]
+                            stakedNFTs?: any[]
+                            stakedCounts?: { legendary: number; premium: number; standard: number }
+                        }
+                        if (Array.isArray(cached.ownedNFTs) && Array.isArray(cached.stakedNFTs)) {
+                            setOwnedNFTs(deserializeOwnedNftsFromCache(cached.ownedNFTs))
+                            setStakedNFTs(deserializeStakedNftsFromCache(cached.stakedNFTs))
+                            setLegendaryStats((prev) => ({
+                                ...prev,
+                                staked: cached.stakedCounts?.legendary || 0,
+                            }))
+                            setPremiumStats((prev) => ({
+                                ...prev,
+                                staked: cached.stakedCounts?.premium || 0,
+                            }))
+                            setStandardStats((prev) => ({
+                                ...prev,
+                                staked: cached.stakedCounts?.standard || 0,
+                            }))
+                            seededFromCache = true
+                            setLoadingNFTs(false)
+                        }
+                    }
+                } catch {
+                    // Ignore stale cache and fetch fresh data.
+                }
+            }
 
-            setLoadingNFTs(true)
+            if (!seededFromCache) {
+                setLoadingNFTs(true)
+            }
             try {
                 console.log("Fetching NFTs for address:", address)
 
@@ -287,30 +399,36 @@ const StakingNFT = () => {
                         stakedTokenIdsList = stakedTokenIdsList.concat(tokens)
                         allStakedNFTs = allStakedNFTs.concat(tokens.map(t => ({ tokenId: t, pool: 'Legendary' })))
                     }
-                    setLegendaryStats(prev => ({ ...prev, staked: legendaryInfo?.[0]?.length || 0 }))
 
                     if (premiumInfo && premiumInfo[0] && premiumInfo[0].length > 0) {
                         const tokens = premiumInfo[0] as bigint[]
                         stakedTokenIdsList = stakedTokenIdsList.concat(tokens)
                         allStakedNFTs = allStakedNFTs.concat(tokens.map(t => ({ tokenId: t, pool: 'Premium' })))
                     }
-                    setPremiumStats(prev => ({ ...prev, staked: premiumInfo?.[0]?.length || 0 }))
 
                     if (standardInfo && standardInfo[0] && standardInfo[0].length > 0) {
                         const tokens = standardInfo[0] as bigint[]
                         stakedTokenIdsList = stakedTokenIdsList.concat(tokens)
                         allStakedNFTs = allStakedNFTs.concat(tokens.map(t => ({ tokenId: t, pool: 'Standard' })))
                     }
-                    setStandardStats(prev => ({ ...prev, staked: standardInfo?.[0]?.length || 0 }))
 
-                    console.log(`Total staked NFTs: ${allStakedNFTs.length}`)
-                    setStakedNFTs(allStakedNFTs)
-                    setCurrentEarnings("0")
-
-                    return stakedTokenIdsList
+                    return {
+                        stakedTokenIdsList,
+                        allStakedNFTs,
+                        stakedCounts: {
+                            legendary: legendaryInfo?.[0]?.length || 0,
+                            premium: premiumInfo?.[0]?.length || 0,
+                            standard: standardInfo?.[0]?.length || 0,
+                        },
+                    }
                 }
 
-                const stakedTokenIdsList = await fetchStakedNFTs()
+                const { stakedTokenIdsList, allStakedNFTs, stakedCounts } = await fetchStakedNFTs()
+                setLegendaryStats(prev => ({ ...prev, staked: stakedCounts.legendary }))
+                setPremiumStats(prev => ({ ...prev, staked: stakedCounts.premium }))
+                setStandardStats(prev => ({ ...prev, staked: stakedCounts.standard }))
+                setStakedNFTs(allStakedNFTs)
+                setCurrentEarnings("0")
 
                 // Filter out staked NFTs from owned list
                 const unstakedNFTs = ownedNFTsList.filter(nft =>
@@ -322,6 +440,18 @@ const StakingNFT = () => {
                 console.log("Unstaked (available to stake):", unstakedNFTs.length)
                 console.log("Unstaked NFTs list:", unstakedNFTs)
                 setOwnedNFTs(unstakedNFTs)
+
+                if (typeof window !== "undefined") {
+                    window.localStorage.setItem(
+                        uiCacheKey,
+                        JSON.stringify({
+                            ownedNFTs: serializeOwnedNftsForCache(unstakedNFTs),
+                            stakedNFTs: serializeStakedNftsForCache(allStakedNFTs),
+                            stakedCounts,
+                            updatedAt: Date.now(),
+                        }),
+                    )
+                }
             } catch (error) {
                 console.error("Error fetching NFTs:", error)
             } finally {
@@ -335,7 +465,7 @@ const StakingNFT = () => {
         } else {
             setLoadingNFTs(false)
         }
-    }, [address])
+    }, [address, legendaryPoolContract, premiumPoolContract, standardPoolContract])
 
     // Fetch total staked counts using NFT balanceOf (fast - single RPC call per pool)
     useEffect(() => {
@@ -367,7 +497,7 @@ const StakingNFT = () => {
         }
 
         fetchTotalStaked()
-    }, [])
+    }, [nftContract])
 
 
 
@@ -477,104 +607,72 @@ const StakingNFT = () => {
         fetchTotalEarned()
     }, [address])
 
+    const refreshLiveData = useCallback(async (force = false) => {
+        if (!address) return
+        if (!force && Date.now() < actionSyncUntilRef.current) return
+        try {
+            const [legendaryInfo, premiumInfo, standardInfo] = await Promise.all([
+                readContract({
+                    contract: legendaryPoolContract,
+                    method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
+                    params: [address],
+                }).catch(() => null),
+                readContract({
+                    contract: premiumPoolContract,
+                    method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
+                    params: [address],
+                }).catch(() => null),
+                readContract({
+                    contract: standardPoolContract,
+                    method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
+                    params: [address],
+                }).catch(() => null),
+            ])
+
+            const legendaryRewards = legendaryInfo ? (legendaryInfo[1] as bigint) : BigInt(0)
+            const premiumRewards = premiumInfo ? (premiumInfo[1] as bigint) : BigInt(0)
+            const standardRewards = standardInfo ? (standardInfo[1] as bigint) : BigInt(0)
+            const totalCurrentEarnings = legendaryRewards + premiumRewards + standardRewards
+            const rewardsInEther = ethers.formatUnits(totalCurrentEarnings.toString(), 18)
+            setCurrentEarnings(rewardsInEther)
+
+            setLegendaryStats(prev => ({
+                ...prev,
+                staked: legendaryInfo?.[0] ? (legendaryInfo[0] as bigint[]).length : 0,
+            }))
+            setPremiumStats(prev => ({
+                ...prev,
+                staked: premiumInfo?.[0] ? (premiumInfo[0] as bigint[]).length : 0,
+            }))
+            setStandardStats(prev => ({
+                ...prev,
+                staked: standardInfo?.[0] ? (standardInfo[0] as bigint[]).length : 0,
+            }))
+        } catch (error) {
+            console.error("Error refreshing data:", error)
+        }
+    }, [address, legendaryPoolContract, premiumPoolContract, standardPoolContract])
+
+    const schedulePostActionSync = useCallback(() => {
+        actionSyncUntilRef.current = Date.now() + POST_ACTION_SYNC_DELAY_MS
+        if (actionSyncTimerRef.current) {
+            clearTimeout(actionSyncTimerRef.current)
+        }
+        actionSyncTimerRef.current = setTimeout(() => {
+            actionSyncUntilRef.current = 0
+            void refreshLiveData(true)
+        }, POST_ACTION_SYNC_DELAY_MS)
+    }, [refreshLiveData])
+
     // Separate effect for refreshing live earnings
     useEffect(() => {
         if (!address) return
-
-        const refreshData = async () => {
-            try {
-                let totalCurrentEarnings = BigInt(0)
-
-                // Legendary pool
-                try {
-                    // Get current live earnings and staked count
-                    const stakeInfo = await readContract({
-                        contract: legendaryPoolContract,
-                        method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
-                        params: [address]
-                    })
-
-                    if (stakeInfo) {
-                        const rewards = stakeInfo[1] as bigint
-                        totalCurrentEarnings += rewards
-
-                        const stakedTokens = stakeInfo[0] as bigint[]
-
-                        // Update user's staked count
-                        setLegendaryStats(prev => ({
-                            ...prev,
-                            staked: stakedTokens.length
-                        }))
-                    }
-                } catch (error) {
-                    // Silent fail
-                }
-
-                // Premium pool
-                try {
-                    // Get current live earnings and staked count
-                    const stakeInfo = await readContract({
-                        contract: premiumPoolContract,
-                        method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
-                        params: [address]
-                    })
-
-                    if (stakeInfo) {
-                        const rewards = stakeInfo[1] as bigint
-                        totalCurrentEarnings += rewards
-
-                        const stakedTokens = stakeInfo[0] as bigint[]
-
-                        // Update user's staked count
-                        setPremiumStats(prev => ({
-                            ...prev,
-                            staked: stakedTokens.length
-                        }))
-                    }
-                } catch (error) {
-                    // Silent fail
-                }
-
-                // Standard pool
-                try {
-                    // Get current live earnings and staked count
-                    const stakeInfo = await readContract({
-                        contract: standardPoolContract,
-                        method: "function getStakeInfo(address _staker) view returns (uint256[] _tokensStaked, uint256 _rewards)",
-                        params: [address]
-                    })
-
-                    console.log('[Standard Pool] stakeInfo:', stakeInfo)
-
-                    if (stakeInfo) {
-                        const rewards = stakeInfo[1] as bigint
-                        totalCurrentEarnings += rewards
-
-                        const stakedTokens = stakeInfo[0] as bigint[]
-                        console.log('[Standard Pool] Your staked tokens:', stakedTokens)
-                        console.log('[Standard Pool] Your staked count:', stakedTokens.length)
-
-                        // Update user's staked count
-                        setStandardStats(prev => ({
-                            ...prev,
-                            staked: stakedTokens.length
-                        }))
-                    }
-                } catch (error) {
-                    console.error('[Standard Pool] Error:', error)
-                }
-
-                const rewardsInEther = ethers.formatUnits(totalCurrentEarnings.toString(), 18)
-                setCurrentEarnings(rewardsInEther)
-            } catch (error) {
-                console.error("Error refreshing data:", error)
-            }
-        }
-
-        // Refresh every 1 second
-        const interval = setInterval(refreshData, 1000)
+        void refreshLiveData(true)
+        const interval = setInterval(() => {
+            void refreshLiveData(false)
+        }, LIVE_EARNINGS_REFRESH_MS)
         return () => clearInterval(interval)
-    }, [address])
+    }, [address, refreshLiveData])
 
 
 
@@ -632,6 +730,47 @@ const StakingNFT = () => {
         }
     }
 
+    const waitForTxConfirmation = useCallback(
+        async (txHash: string, label: string) => {
+            const provider = new ethers.JsonRpcProvider(BASE_RPC_URL)
+            const receipt = await provider.waitForTransaction(txHash, 1, 180000)
+            if (!receipt) {
+                throw new Error(`${label} transaction was not confirmed yet.`)
+            }
+            if (receipt.status !== 1) {
+                throw new Error(`${label} transaction reverted onchain.`)
+            }
+        },
+        []
+    )
+
+    const sendContractTransaction = useCallback(
+        async (params: { to: string; data: `0x${string}`; label: string }) => {
+            if (!address || !walletClient) {
+                throw new Error("Wallet not initialized")
+            }
+
+            // Keep tx payload minimal and let the wallet/provider fill gas and fee fields.
+            const txRequest: Record<string, string> = {
+                from: address,
+                to: params.to,
+                data: params.data,
+                value: "0x0",
+            }
+
+            if (typeof walletClient.request !== "function") {
+                throw new Error("Wallet request method is unavailable.")
+            }
+
+            const txHash = await walletClient.request({
+                method: "eth_sendTransaction",
+                params: [txRequest],
+            })
+            return txHash as string
+        },
+        [address, walletClient]
+    )
+
     const handleSelectNFT = (tokenId: string) => {
         setSelectedNFTs(prev => {
             if (prev.includes(tokenId)) {
@@ -641,6 +780,27 @@ const StakingNFT = () => {
             }
         })
     }
+
+    const resolvePoolForUnstakeToken = useCallback((tokenId: string) => {
+        const tokenIdBigInt = BigInt(tokenId)
+        const stakedEntry = stakedNFTs.find((nft) => {
+            try {
+                return BigInt(nft.tokenId) === tokenIdBigInt
+            } catch {
+                return false
+            }
+        })
+
+        const poolFromState = stakedEntry?.pool ? getPoolAddressByName(stakedEntry.pool) : null
+        if (poolFromState) {
+            return {
+                address: poolFromState,
+                name: stakedEntry.pool,
+            }
+        }
+
+        return getPoolForTokenId(parseInt(tokenId))
+    }, [stakedNFTs])
 
     // Helper function to check if user has enough ETH for gas
     const checkGasBalance = async (): Promise<boolean> => {
@@ -729,18 +889,24 @@ const StakingNFT = () => {
                 })
 
                 try {
-                    const hash = await walletClient.sendTransaction({
-                        from: address,
+                    const hash = await sendContractTransaction({
                         to: NFT_COLLECTION_ADDRESS,
-                        data: approvalData,
+                        data: approvalData as `0x${string}`,
+                        label: `${pool.name} approval`,
                     })
                     console.log(`Approval tx hash:`, hash)
                     await new Promise(resolve => setTimeout(resolve, 3000))
                 } catch (approvalError: any) {
                     console.error("Approval error:", approvalError)
                     setShowPendingToast(false)
-                    setErrorToastTitle("Insufficient funds for gas fee")
-                    setErrorToastMessage("You must fund your wallet with ETH")
+                    const approvalMessage = String(approvalError?.message || approvalError || "").toLowerCase()
+                    if (approvalMessage.includes("execution reverted") || approvalMessage.includes("estimate") || approvalMessage.includes("missing") || approvalMessage.includes("invalid parameters")) {
+                        setErrorToastTitle("Approval transaction blocked")
+                        setErrorToastMessage("MetaMask simulation failed. Check wallet network and retry.")
+                    } else {
+                        setErrorToastTitle("Insufficient funds for gas fee")
+                        setErrorToastMessage("You must fund your wallet with ETH")
+                    }
                     setShowErrorToast(true)
                     setTimeout(() => setShowErrorToast(false), 6000)
                     setLoading(false)
@@ -764,16 +930,22 @@ const StakingNFT = () => {
 
             let stakeHash
             try {
-                stakeHash = await walletClient.sendTransaction({
-                    from: address,
+                stakeHash = await sendContractTransaction({
                     to: pool.address,
-                    data: stakeData,
+                    data: stakeData as `0x${string}`,
+                    label: "Stake",
                 })
             } catch (txError: any) {
                 console.error("Transaction error:", txError)
                 setShowPendingToast(false)
-                setErrorToastTitle("Insufficient funds for gas fee")
-                setErrorToastMessage("You must fund your wallet with ETH")
+                const txMessage = String(txError?.message || txError || "").toLowerCase()
+                if (txMessage.includes("execution reverted") || txMessage.includes("estimate") || txMessage.includes("missing") || txMessage.includes("invalid parameters")) {
+                    setErrorToastTitle("Stake transaction blocked")
+                    setErrorToastMessage("MetaMask simulation failed. Refresh plots and retry.")
+                } else {
+                    setErrorToastTitle("Insufficient funds for gas fee")
+                    setErrorToastMessage("You must fund your wallet with ETH")
+                }
                 setShowErrorToast(true)
                 setTimeout(() => setShowErrorToast(false), 6000)
                 setLoading(false)
@@ -781,6 +953,7 @@ const StakingNFT = () => {
                 return
             }
             console.log(`Stake tx hash:`, stakeHash)
+            await waitForTxConfirmation(stakeHash as string, "Stake")
 
             setPendingProgress({ current: 1, total: 1 })
             setShowPendingToast(false)
@@ -806,6 +979,7 @@ const StakingNFT = () => {
             setToastType('stake')
             setSelectedNFTs([])
             setShowSuccessToast(true)
+            schedulePostActionSync()
             setTimeout(() => setShowSuccessToast(false), 4000)
         } catch (error: any) {
             console.error("Error staking NFT:", error)
@@ -906,18 +1080,24 @@ const StakingNFT = () => {
                     console.log(`🔍 Sending approval tx with from: ${address}`)
 
                     try {
-                        const hash = await walletClient.sendTransaction({
-                            from: address,
+                        const hash = await sendContractTransaction({
                             to: NFT_COLLECTION_ADDRESS,
-                            data: approvalData,
+                            data: approvalData as `0x${string}`,
+                            label: `${poolData.poolName} approval`,
                         })
                         console.log(`Approval tx hash for ${poolData.poolName}:`, hash)
                         await new Promise(resolve => setTimeout(resolve, 3000))
                     } catch (approvalError: any) {
                         console.error("Approval error:", approvalError)
                         setShowPendingToast(false)
-                        setErrorToastTitle("Insufficient funds for gas fee")
-                        setErrorToastMessage("You must fund your wallet with ETH")
+                        const approvalMessage = String(approvalError?.message || approvalError || "").toLowerCase()
+                        if (approvalMessage.includes("execution reverted") || approvalMessage.includes("estimate") || approvalMessage.includes("missing") || approvalMessage.includes("invalid parameters")) {
+                            setErrorToastTitle("Approval transaction blocked")
+                            setErrorToastMessage("MetaMask simulation failed. Check wallet network and retry.")
+                        } else {
+                            setErrorToastTitle("Insufficient funds for gas fee")
+                            setErrorToastMessage("You must fund your wallet with ETH")
+                        }
                         setShowErrorToast(true)
                         setTimeout(() => setShowErrorToast(false), 6000)
                         setLoading(false)
@@ -953,16 +1133,22 @@ const StakingNFT = () => {
 
                 let stakeHash
                 try {
-                    stakeHash = await walletClient.sendTransaction({
-                        from: address,
+                    stakeHash = await sendContractTransaction({
                         to: poolAddress,
-                        data: stakeData,
+                        data: stakeData as `0x${string}`,
+                        label: `${poolData.poolName} stake`,
                     })
                 } catch (txError: any) {
                     console.error("Transaction error:", txError)
                     setShowPendingToast(false)
-                    setErrorToastTitle("Insufficient funds for gas fee")
-                    setErrorToastMessage("You must fund your wallet with ETH")
+                    const txMessage = String(txError?.message || txError || "").toLowerCase()
+                    if (txMessage.includes("execution reverted") || txMessage.includes("estimate") || txMessage.includes("missing") || txMessage.includes("invalid parameters")) {
+                        setErrorToastTitle("Stake transaction blocked")
+                        setErrorToastMessage("MetaMask simulation failed. Refresh plots and retry.")
+                    } else {
+                        setErrorToastTitle("Insufficient funds for gas fee")
+                        setErrorToastMessage("You must fund your wallet with ETH")
+                    }
                     setShowErrorToast(true)
                     setTimeout(() => setShowErrorToast(false), 6000)
                     setLoading(false)
@@ -970,6 +1156,7 @@ const StakingNFT = () => {
                     return
                 }
                 console.log(`Stake tx hash for ${poolData.poolName}:`, stakeHash)
+                await waitForTxConfirmation(stakeHash as string, `${poolData.poolName} stake`)
                 
                 // Wait for nonce to update before next transaction
                 await new Promise(resolve => setTimeout(resolve, 3000))
@@ -1012,6 +1199,7 @@ const StakingNFT = () => {
             setToastType('stake')
             setSelectedNFTs([])
             setShowSuccessToast(true)
+            schedulePostActionSync()
             setTimeout(() => setShowSuccessToast(false), 4000)
         } catch (error: any) {
             console.error("Error staking NFTs:", error)
@@ -1055,7 +1243,7 @@ const StakingNFT = () => {
         setPendingProgress({ current: 0, total: 1 })
         
         try {
-            const pool = getPoolForTokenId(parseInt(tokenId))
+            const pool = resolvePoolForUnstakeToken(tokenId)
             console.log(`Withdrawing NFT #${tokenId} from ${pool.name} pool...`)
 
             const withdrawData = encodeFunctionData({
@@ -1072,16 +1260,27 @@ const StakingNFT = () => {
 
             let withdrawHash
             try {
-                withdrawHash = await walletClient.sendTransaction({
-                    from: address,
+                withdrawHash = await sendContractTransaction({
                     to: pool.address,
                     data: withdrawData,
+                    label: "Unstake",
                 })
             } catch (txError: any) {
                 console.error("Transaction error:", txError)
                 setShowPendingToast(false)
-                setErrorToastTitle("Insufficient funds for gas fee")
-                setErrorToastMessage("You must fund your wallet with ETH")
+                const txMessage = String(txError?.message || txError || "").toLowerCase()
+                if (
+                    txMessage.includes("execution reverted") ||
+                    txMessage.includes("estimate") ||
+                    txMessage.includes("missing") ||
+                    txMessage.includes("invalid parameters")
+                ) {
+                    setErrorToastTitle("Unstake transaction blocked")
+                    setErrorToastMessage("MetaMask simulation failed. Refresh staked plots and retry.")
+                } else {
+                    setErrorToastTitle("Insufficient funds for gas fee")
+                    setErrorToastMessage("You must fund your wallet with ETH")
+                }
                 setShowErrorToast(true)
                 setTimeout(() => setShowErrorToast(false), 6000)
                 setLoading(false)
@@ -1089,6 +1288,7 @@ const StakingNFT = () => {
                 return
             }
             console.log(`Withdraw tx hash:`, withdrawHash)
+            await waitForTxConfirmation(withdrawHash as string, "Unstake")
 
             setPendingProgress({ current: 1, total: 1 })
             setShowPendingToast(false)
@@ -1122,12 +1322,19 @@ const StakingNFT = () => {
             setToastType('unstake')
             setSelectedNFTs([])
             setShowSuccessToast(true)
+            schedulePostActionSync()
             setTimeout(() => setShowSuccessToast(false), 4000)
         } catch (error: any) {
             console.error("Error withdrawing NFT:", error)
             setShowPendingToast(false)
-            setErrorToastTitle("Insufficient funds for gas fee")
-            setErrorToastMessage("You must fund your wallet with ETH")
+            const message = String(error?.message || "").toLowerCase()
+            if (message.includes("not confirmed") || message.includes("reverted")) {
+                setErrorToastTitle("Unstake not confirmed")
+                setErrorToastMessage("Transaction was signed but not finalized onchain. Please check Basescan and retry.")
+            } else {
+                setErrorToastTitle("Insufficient funds for gas fee")
+                setErrorToastMessage("You must fund your wallet with ETH")
+            }
             setShowErrorToast(true)
             setTimeout(() => setShowErrorToast(false), 6000)
         } finally {
@@ -1176,7 +1383,7 @@ const StakingNFT = () => {
             const nftsByPool: { [key: string]: { tokenIds: bigint[], poolName: string } } = {}
 
             for (const tokenId of selectedNFTs) {
-                const pool = getPoolForTokenId(parseInt(tokenId))
+                const pool = resolvePoolForUnstakeToken(tokenId)
                 if (!nftsByPool[pool.address]) {
                     nftsByPool[pool.address] = { tokenIds: [], poolName: pool.name }
                 }
@@ -1213,16 +1420,27 @@ const StakingNFT = () => {
 
                 let withdrawHash
                 try {
-                    withdrawHash = await walletClient.sendTransaction({
-                        from: address,
+                    withdrawHash = await sendContractTransaction({
                         to: poolAddress,
                         data: withdrawData,
+                        label: `${poolData.poolName} unstake`,
                     })
                 } catch (txError: any) {
                     console.error("Transaction error:", txError)
                     setShowPendingToast(false)
-                    setErrorToastTitle("Insufficient funds for gas fee")
-                    setErrorToastMessage("You must fund your wallet with ETH")
+                    const txMessage = String(txError?.message || txError || "").toLowerCase()
+                    if (
+                        txMessage.includes("execution reverted") ||
+                        txMessage.includes("estimate") ||
+                        txMessage.includes("missing") ||
+                        txMessage.includes("invalid parameters")
+                    ) {
+                        setErrorToastTitle("Unstake transaction blocked")
+                        setErrorToastMessage("MetaMask simulation failed. Refresh staked plots and retry.")
+                    } else {
+                        setErrorToastTitle("Insufficient funds for gas fee")
+                        setErrorToastMessage("You must fund your wallet with ETH")
+                    }
                     setShowErrorToast(true)
                     setTimeout(() => setShowErrorToast(false), 6000)
                     setLoading(false)
@@ -1230,6 +1448,7 @@ const StakingNFT = () => {
                     return
                 }
                 console.log(`Withdraw tx hash for ${poolData.poolName}:`, withdrawHash)
+                await waitForTxConfirmation(withdrawHash as string, `${poolData.poolName} unstake`)
                 
                 // Wait for nonce to update before next transaction
                 await new Promise(resolve => setTimeout(resolve, 3000))
@@ -1279,6 +1498,7 @@ const StakingNFT = () => {
             setToastType('unstake')
             setSelectedNFTs([])
             setShowSuccessToast(true)
+            schedulePostActionSync()
             setTimeout(() => setShowSuccessToast(false), 4000)
         } catch (error: any) {
             console.error("Error withdrawing NFTs:", error)
@@ -1287,9 +1507,19 @@ const StakingNFT = () => {
             // Check for insufficient funds / gas errors
             const errorMsg = error?.message?.toLowerCase() || ''
             const errorName = error?.name?.toLowerCase() || ''
-            if (errorMsg.includes('insufficient') || errorMsg.includes('gas') || errorMsg.includes('reverted') || errorMsg.includes('estimate') || errorName.includes('estimategas') || errorName.includes('execution')) {
+            if (errorMsg.includes('not confirmed') || errorMsg.includes('reverted')) {
+                setErrorToastTitle("Unstake not confirmed")
+                setErrorToastMessage("Transaction was signed but not finalized onchain. Please check Basescan and retry.")
+                setShowErrorToast(true)
+                setTimeout(() => setShowErrorToast(false), 6000)
+            } else if (errorMsg.includes('insufficient') || errorMsg.includes('gas') || errorMsg.includes('estimate') || errorName.includes('estimategas') || errorName.includes('execution')) {
                 setErrorToastTitle("Insufficient funds for gas fee")
                 setErrorToastMessage("You must fund your wallet with ETH")
+                setShowErrorToast(true)
+                setTimeout(() => setShowErrorToast(false), 6000)
+            } else {
+                setErrorToastTitle("Unstake failed")
+                setErrorToastMessage("Please retry and confirm transaction status on Basescan.")
                 setShowErrorToast(true)
                 setTimeout(() => setShowErrorToast(false), 6000)
             }
@@ -1395,12 +1625,13 @@ const StakingNFT = () => {
 
                 console.log(`🔍 Sending claim tx with from: ${address}, to: ${pool.address}`)
 
-                const claimHash = await walletClient.sendTransaction({
-                    from: address,
+                const claimHash = await sendContractTransaction({
                     to: pool.address,
-                    data: claimData,
+                    data: claimData as `0x${string}`,
+                    label: `${pool.name} claim`,
                 })
                 console.log(`Claim tx hash for ${pool.name}:`, claimHash)
+                await waitForTxConfirmation(claimHash as string, `${pool.name} claim`)
                 
                 // Wait for nonce to update before next transaction
                 await new Promise(resolve => setTimeout(resolve, 3000))
@@ -1450,6 +1681,7 @@ const StakingNFT = () => {
             
             setToastType('claim')
             setShowSuccessToast(true)
+            schedulePostActionSync()
             setTimeout(() => setShowSuccessToast(false), 4000)
         } catch (error: any) {
             console.error("Error claiming rewards:", error)
