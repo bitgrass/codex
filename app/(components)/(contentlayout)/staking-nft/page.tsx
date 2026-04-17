@@ -64,6 +64,10 @@ function getStakingUiCacheKey(address: string) {
     return `${STAKING_UI_CACHE_PREFIX}:${address.toLowerCase()}`
 }
 
+function getCurrentEarningsCacheKey(address: string) {
+    return `currentEarnings_${address.toLowerCase()}`
+}
+
 function serializeOwnedNftsForCache(items: any[]) {
     return items.map((item) => ({
         ...item,
@@ -161,6 +165,29 @@ const StakingNFT = () => {
         premiumStats.staked,
         standardStats.staked,
     ])
+
+    useEffect(() => {
+        if (typeof window === "undefined") return
+        if (!address) {
+            setCurrentEarnings("0")
+            return
+        }
+        const currentEarningsCacheKey = getCurrentEarningsCacheKey(address)
+        const cachedValue = window.localStorage.getItem(currentEarningsCacheKey)
+        if (!cachedValue) {
+            setCurrentEarnings("0")
+            return
+        }
+
+        const parsed = Number.parseFloat(cachedValue)
+        if (Number.isFinite(parsed) && parsed >= 0) {
+            setCurrentEarnings(cachedValue)
+            return
+        }
+
+        window.localStorage.removeItem(currentEarningsCacheKey)
+        setCurrentEarnings("0")
+    }, [address])
 
     useEffect(() => {
         const tab = (searchParams.get("tab") || "").toLowerCase()
@@ -428,7 +455,6 @@ const StakingNFT = () => {
                 setPremiumStats(prev => ({ ...prev, staked: stakedCounts.premium }))
                 setStandardStats(prev => ({ ...prev, staked: stakedCounts.standard }))
                 setStakedNFTs(allStakedNFTs)
-                setCurrentEarnings("0")
 
                 // Filter out staked NFTs from owned list
                 const unstakedNFTs = ownedNFTsList.filter(nft =>
@@ -635,6 +661,10 @@ const StakingNFT = () => {
             const totalCurrentEarnings = legendaryRewards + premiumRewards + standardRewards
             const rewardsInEther = ethers.formatUnits(totalCurrentEarnings.toString(), 18)
             setCurrentEarnings(rewardsInEther)
+            if (typeof window !== "undefined") {
+                const currentEarningsCacheKey = getCurrentEarningsCacheKey(address)
+                window.localStorage.setItem(currentEarningsCacheKey, rewardsInEther)
+            }
 
             setLegendaryStats(prev => ({
                 ...prev,
@@ -1678,6 +1708,10 @@ const StakingNFT = () => {
             
             // Reset current earnings to 0 since they've been claimed
             setCurrentEarnings("0")
+            if (address && typeof window !== "undefined") {
+                const currentEarningsCacheKey = getCurrentEarningsCacheKey(address)
+                window.localStorage.setItem(currentEarningsCacheKey, "0")
+            }
             
             setToastType('claim')
             setShowSuccessToast(true)
